@@ -1,0 +1,2 @@
+# stampo
+stampo
