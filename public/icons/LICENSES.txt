@@ -1,2 +1,4 @@
 Tabler Icons - MIT License - Copyright (c) 2020-2024 Pawel Kuna - https://github.com/tabler/tabler-icons
 Phosphor Icons - MIT License - Copyright (c) 2023 Phosphor Icons - https://github.com/phosphor-icons/core
+
+jsQR 1.4.0 (Apache-2.0, github.com/cozmo/jsQR) and qrcode-generator 1.4.4 (MIT, Kazuhiko Arase) are in public/vendor.
