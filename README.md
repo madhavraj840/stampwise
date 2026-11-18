@@ -32,6 +32,7 @@ Vercel Hobby is for non-commercial use. Move to Pro (or any Node host) before ch
 - A daily cron (`/api/cron/daily`) cleans rate limits, expires old reset requests and deletes declined requests older than 180 days.
 
 ## Anti-fraud (cheap, built in)
+**Currently OFF for testing.** Set `STAMP_LIMITS=on` in the Vercel env vars and redeploy to turn the limits below back on.
 One waiting request per customer per shop · one stamp per day (unless the shop allows more) · max 2 requests per hour per shop and 20 per day overall · 10-minute cooldown after a decline · blocked customers and suspended shops refused · auto-approve needs a confirmation, and the admin dashboard flags auto-approve shops with very busy days and customers joining 5+ shops in a day. Rewards are redeemed with a 4-digit code or by scanning the customer's reward QR.
 
 ## Admin panel (`admin/`)
@@ -55,6 +56,9 @@ After two wrong passwords the shop login offers **Reset via WhatsApp**: the shop
 
 ## Adding OTP later
 `verifyPhone(phone, body)` in `app.js` is the single hook every customer login goes through; `customers.phone_verified` already exists.
+
+## Card size
+The card has as many stamps as the shop's biggest active reward (1 to 30). Adding, editing or removing a reward resizes it. A new shop with no rewards shows 8.
 
 ## Staff accounts (structure only)
 `shop_staff` (approve-only role) and `stamp_requests.decided_by` exist; no screens yet.

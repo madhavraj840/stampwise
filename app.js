@@ -132,6 +132,9 @@ async function decide(id,shopId,ok){
   if(!r)throw err(404,'This request was already handled');return r;
 }
 const MAX_PER_HOUR=2,MAX_PER_DAY=20,COOLDOWN_MIN=10;
+// Anti-fraud limits (one stamp a day, 2 an hour, 20 a day, cooldown after a decline) are OFF while testing.
+// Turn them back on: set STAMP_LIMITS=on in the Vercel env vars and redeploy.
+const LIMITS=process.env.STAMP_LIMITS==='on',stampLimit=LIMITS?limit('stamp',30,6e5,req=>req.uid):(req,res,next)=>next();
 async function requestStamp(uid,s){
   if(s.paused)return 'paused';
   // ONE statement: join the shop (creates the card), then the anti-fraud checks, then the request
@@ -142,23 +145,23 @@ async function requestStamp(uid,s){
     chk as(select (select status from cu) cst,
       exists(select 1 from stamp_requests where customer_id=$1 and shop_id=$2 and status='pending') pending,
       ($3 and exists(select 1 from stamp_requests where customer_id=$1 and shop_id=$2 and status='approved' and decided_at>=${TODAY})) today,
-      exists(select 1 from stamp_requests where customer_id=$1 and shop_id=$2 and status='declined' and decided_at>now()-make_interval(mins=>${COOLDOWN_MIN})) cooldown,
-      (select count(*) from stamp_requests where customer_id=$1 and shop_id=$2 and created_at>now()-interval '1 hour')>=${MAX_PER_HOUR} hour_limit,
-      (select count(*) from stamp_requests where customer_id=$1 and created_at>now()-interval '1 day')>=${MAX_PER_DAY} day_limit),
+      ($4 and exists(select 1 from stamp_requests where customer_id=$1 and shop_id=$2 and status='declined' and decided_at>now()-make_interval(mins=>${COOLDOWN_MIN}))) cooldown,
+      ($4 and (select count(*) from stamp_requests where customer_id=$1 and shop_id=$2 and created_at>now()-interval '1 hour')>=${MAX_PER_HOUR}) hour_limit,
+      ($4 and (select count(*) from stamp_requests where customer_id=$1 and created_at>now()-interval '1 day')>=${MAX_PER_DAY}) day_limit),
     ins as(insert into stamp_requests(customer_id,shop_id) select $1,$2 from chk
       where cst='active' and not(pending or today or cooldown or hour_limit or day_limit) on conflict do nothing returning id)
-    select chk.*,(select id from ins) id from chk`,[uid,s.id,!s.multi_per_day]);
+    select chk.*,(select id from ins) id from chk`,[uid,s.id,LIMITS&&!s.multi_per_day,LIMITS]);
   if(r.cst!=='active')throw err(403,'Your account is blocked.');
   if(!r.id)return r.today?'already_today':['cooldown','hour_limit','day_limit'].find(k=>r[k])||'pending';
   if(s.auto_approve){await decide(r.id,s.id,true);return 'approved'}
   await notifyShop(s.id,{t:'pending'}).catch(e=>console.error('push:',e.message));return 'pending';
 }
 // scan a QR link / enter a shop code: joins the shop and asks for a stamp
-app.post('/api/scan/:key',C,limit('stamp',30,6e5,req=>req.uid),h(async(req,res)=>{
+app.post('/api/scan/:key',C,stampLimit,h(async(req,res)=>{
   const s=await findShop(req.params.key);if(!s)throw err(404,'This QR code or shop code is not valid');
   res.json({status:await requestStamp(req.uid,s),shop_id:s.id});
 }));
-app.post('/api/cards/:shopId(\\d{1,9})/request',C,limit('stamp',30,6e5,req=>req.uid),h(async(req,res)=>{
+app.post('/api/cards/:shopId(\\d{1,9})/request',C,stampLimit,h(async(req,res)=>{
   const s=await one("select * from shops where id=$1 and status='active'",[+req.params.shopId]);if(!s)throw err(404,'Card not found');
   res.json({status:await requestStamp(req.uid,s),shop_id:s.id});
 }));
@@ -256,17 +259,15 @@ const STAMPS=['star','coffee','heart','flower','paw','scissors','pizza','burger'
 const REVIEW=/^https:\/\/(g\.page|maps\.app\.goo\.gl|goo\.gl|g\.co|(www\.|maps\.|search\.)?google\.[a-z.]{2,6})\/\S*$/i;
 app.patch('/api/shop/settings',S,h(async(req,res)=>{
   const b=req.body,str=(v,n)=>typeof v==='string'?v.trim().slice(0,n):null,bool=v=>typeof v==='boolean'?v:null;
-  const size=Number(b.card_size)>=2&&Number(b.card_size)<=30?Math.floor(b.card_size):null;
-  if(size&&await one('select 1 from rewards where shop_id=$1 and active and stamps_required>$2',[req.uid,size]))throw err(400,'A reward needs more stamps than this card size. Edit or remove it first.');
   let rv=str(b.review_url,300),ig=str(b.instagram,100),wa=str(b.whatsapp,20);
   if(rv&&!REVIEW.test(rv))throw err(400,'Paste your Google review link (it starts with https://g.page or https://maps.app.goo.gl)');
   if(ig!=null){ig=ig.replace(/^https?:\/\/(www\.)?instagram\.com\//i,'').replace(/^@/,'').replace(/[/?#].*$/,'');if(ig&&!/^[A-Za-z0-9._]{1,30}$/.test(ig))throw err(400,'Enter your Instagram username')}
   if(wa!=null&&wa){const d=wa.replace(/\D/g,'');wa=normPhone(d)?'91'+normPhone(d):/^\d{11,15}$/.test(d)?d:null;if(!wa)throw err(400,'Enter a valid WhatsApp number')}
-  await q(`update shops set name=coalesce($2,name),phone=coalesce($3,phone),address=coalesce($4,address),hours=coalesce($5,hours),card_size=coalesce($6,card_size),
+  await q(`update shops set name=coalesce($2,name),phone=coalesce($3,phone),address=coalesce($4,address),hours=coalesce($5,hours),card_size=coalesce($6::int,card_size), -- $6 unused: card size now follows the rewards
     auto_approve=coalesce($7,auto_approve),multi_per_day=coalesce($8,multi_per_day),stamp_icon=coalesce($9,stamp_icon),
     review_url=case when $10::text is null then review_url else nullif($10,'') end,instagram=case when $11::text is null then instagram else nullif($11,'') end,
     whatsapp=case when $12::text is null then whatsapp else nullif($12,'') end where id=$1`,
-    [req.uid,str(b.name,80)||null,str(b.phone,20),str(b.address,200),str(b.hours,60),size,bool(b.auto_approve),bool(b.multi_per_day),STAMPS.includes(b.stamp_icon)?b.stamp_icon:null,rv,ig,wa]);
+    [req.uid,str(b.name,80)||null,str(b.phone,20),str(b.address,200),str(b.hours,60),null,bool(b.auto_approve),bool(b.multi_per_day),STAMPS.includes(b.stamp_icon)?b.stamp_icon:null,rv,ig,wa]);
   res.json({ok:true});
 }));
 // pause switch: stops stamps, approvals and redemptions until the shop resumes. Waiting requests are closed
@@ -291,15 +292,16 @@ app.post('/api/shop/requests/approve-all',S,h(async(req,res)=>{
 }));
 async function rewardBody(req){
   const title=String(req.body.title||'').trim().slice(0,80),n=Math.floor(+req.body.stamps_required),d=Math.floor(+req.body.expiry_days)||30;
-  const sh=await one('select card_size from shops where id=$1',[req.uid]);
   if(title.length<2)throw err(400,'Describe the reward');
-  if(!(n>=1&&n<=sh.card_size))throw err(400,`Stamps required must be between 1 and ${sh.card_size}`);
+  if(!(n>=1&&n<=30))throw err(400,'Stamps required must be between 1 and 30');
   if(!(d>=1&&d<=365))throw err(400,'Expiry must be 1 to 365 days');
   return [title,n,d];
 }
-app.post('/api/shop/rewards',S,h(async(req,res)=>{await q('insert into rewards(shop_id,title,stamps_required,expiry_days) values($1,$2,$3,$4)',[req.uid,...await rewardBody(req)]);res.json({ok:true})}));
-app.patch('/api/shop/rewards/:id(\\d{1,9})',S,h(async(req,res)=>{await q('update rewards set title=$3,stamps_required=$4,expiry_days=$5 where id=$1 and shop_id=$2',[+req.params.id,req.uid,...await rewardBody(req)]);res.json({ok:true})}));
-app.delete('/api/shop/rewards/:id(\\d{1,9})',S,h(async(req,res)=>{await q('update rewards set active=false where id=$1 and shop_id=$2',[+req.params.id,req.uid]);res.json({ok:true})}));
+// the card always has as many stamps as the biggest active reward
+const fitCard=id=>q('update shops set card_size=coalesce((select max(stamps_required) from rewards where shop_id=$1 and active),card_size) where id=$1',[id]);
+app.post('/api/shop/rewards',S,h(async(req,res)=>{await q('insert into rewards(shop_id,title,stamps_required,expiry_days) values($1,$2,$3,$4)',[req.uid,...await rewardBody(req)]);await fitCard(req.uid);res.json({ok:true})}));
+app.patch('/api/shop/rewards/:id(\\d{1,9})',S,h(async(req,res)=>{await q('update rewards set title=$3,stamps_required=$4,expiry_days=$5 where id=$1 and shop_id=$2',[+req.params.id,req.uid,...await rewardBody(req)]);await fitCard(req.uid);res.json({ok:true})}));
+app.delete('/api/shop/rewards/:id(\\d{1,9})',S,h(async(req,res)=>{await q('update rewards set active=false where id=$1 and shop_id=$2',[+req.params.id,req.uid]);await fitCard(req.uid);res.json({ok:true})}));
 // redeem by tapping in the list, or by scanning the customer's reward QR (which carries the code as a check)
 app.post('/api/shop/claims/:id(\\d{1,9})/redeem',S,h(async(req,res)=>{
   const code=req.body&&typeof req.body.code==='string'?req.body.code:null;

@@ -37,13 +37,13 @@ async function loginView(step=1){
 
 /* ---------- data: the last copy is kept on the phone so the app opens instantly, then refreshed ---------- */
 const load=async()=>{data=await api('/api/home');me=data.me;store.set('home',data);watchPending()};
-const cols=n=>n<=8?4:n<=10?5:6;
+const cols=n=>n<=5?n:n<=8?4:n<=10?5:6;
 const soon=l=>daysLeft(l.expires_at)<=3;
 /* the printed card: numbered circles, reward spots marked, stamped circles carry a rubber-stamp impression */
 const slots=c=>`<div class="slots" style="grid-template-columns:repeat(${cols(c.card_size)},1fr)">${Array.from({length:c.card_size},(_,i)=>{const n=i+1,on=n<=c.stamps,wait=!on&&n===c.stamps+1&&c.pending,gift=c.rewards.some(r=>r.stamps_required===n);
   return `<div class="slot ${gift?'gift':''} ${wait?'wait':''}" ${on?`aria-label="Stamp ${n}, collected"`:`aria-label="Spot ${n}${gift?', reward':''}${wait?', waiting for approval':''}"`}>${on?stampImg(c.stamp_icon,i):wait?ic('hourglass',22):gift?ic('gift',22)+`<small>${n}</small>`:n}</div>`}).join('')}</div>`;
 const pcard=c=>`<article class="pcard"><div class="pcard-head"><span class="k">Loyalty card</span><h2>${esc(c.name)}</h2></div><div class="pcard-body">${slots(c)}</div>
-  <div class="pcard-foot"><span>${esc(me.name)}</span><span>${c.stamps} / ${c.card_size}</span></div></article>`;
+  <div class="pcard-foot"><span>${esc(me.name)}</span><span>${Math.min(c.stamps,c.card_size)} / ${c.card_size}</span></div></article>`;
 const miniDots=c=>`<div class="dots">${Array.from({length:c.card_size},(_,i)=>{const n=i+1,on=n<=c.stamps,wait=!on&&n===c.stamps+1&&c.pending,gift=c.rewards.some(r=>r.stamps_required===n);return `<i class="${on?'on':''} ${gift&&!on?'gift':''} ${wait?'wait':''}"></i>`}).join('')}</div>`;
 const nextReward=c=>c.rewards.find(r=>r.stamps_required>c.stamps)||c.rewards[0];
 const stampBtn=c=>c.paused?`<button class="btn big line full" disabled>${ic('player-pause',22)}Program paused</button>`:`<button class="btn big ${c.pending?'line':'red'} full" ${c.pending?'disabled':''} onclick="reqStamp(${c.shop_id},this)">${c.pending?ic('hourglass',22)+'Waiting for approval':ic('check',22)+'Request stamp'}</button>`;
