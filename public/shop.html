@@ -129,7 +129,7 @@ function list(){
     <div style="grid-column:1/-1"><span class="lbl">Recent visits</span><div class="sm">${c.history.length?c.history.map(t=>fmtTime(t)).join(' · '):'No approved visits yet'}</div><div class="sm mu" style="margin-top:6px">Joined ${fmtDate(c.joined)}</div></div>
     <div style="grid-column:1/-1"><button class="btn line sm" onclick="delCust(${c.id})">Remove customer</button> <span class="sm mu">Clears their stamps and history at this shop.</span></div></div></details>`).join('')||'<div class="empty"><b>No customers found</b>Share your QR code to start building your customer base.</div>';
 }
-function csv(){const q=s=>'"'+String(s??'').replace(/"/g,'""')+'"',r=view();
+function csv(){const q=s=>'"'+String(s??'').replace(/^[=+\-@\t\r]/,"'$&").replace(/"/g,'""')+'"',r=view(); // a leading ' stops Excel running a customer name like =HYPERLINK(...) as a formula
   const t=['Name,Phone,Stamps,Visits,Cards completed,Rewards earned,Last visit',...r.map(c=>[q(c.name),c.phone,c.stamps,c.visits,c.cycles,c.rewards_earned,q(c.last_visit?new Date(c.last_visit).toISOString():'')].join(','))].join('\n');
   const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download='customers.csv';a.click()}
 async function delCust(id){if(!confirm('Remove this customer? Their stamps, visits and rewards at this shop are deleted.'))return;try{await api('/api/shop/customers/'+id,'DELETE');toast('Customer removed');await refresh(true)}catch(e){toast(e.message)}}

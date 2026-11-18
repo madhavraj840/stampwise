@@ -1,32 +1,51 @@
 require('dotenv').config();
 const express=require('express'),{Pool}=require('pg'),crypto=require('crypto'),path=require('path'),QR=require('qrcode');
-const pool=new Pool({connectionString:process.env.DATABASE_URL,max:10,keepAlive:true});
+const pool=new Pool({connectionString:process.env.DATABASE_URL,max:+process.env.DB_POOL_MAX||10,keepAlive:true});
+// without this, the database closing an idle connection (Neon does this) crashes the whole app
+pool.on('error',e=>console.error('db idle client error:',e.message));
 const app=express(),PROD=process.env.NODE_ENV==='production';
-app.set('trust proxy',1);app.use(express.json({limit:'1mb'}));
-app.use((q,r,n)=>{r.set({'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'same-origin'});n()});
-// keep Neon awake so the first click after a pause is not slow
-setInterval(()=>pool.query('select 1').catch(()=>{}),24e4).unref();
+app.disable('x-powered-by');
+// number of proxies in front of the app (1 = one load balancer). Wrong value = rate limits see the wrong IP. See README "Hosting"
+app.set('trust proxy',+(process.env.TRUST_PROXY??1));app.use(express.json({limit:'1mb'}));
+const CSP="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdnjs.cloudflare.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; font-src https://fonts.gstatic.com; img-src 'self' data: blob:; connect-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'";
+app.use((q,r,n)=>{r.set({'X-Content-Type-Options':'nosniff','X-Frame-Options':'DENY','Referrer-Policy':'same-origin','Content-Security-Policy':CSP,'Permissions-Policy':'camera=(self), microphone=(), geolocation=()'});
+  if(PROD)r.set('Strict-Transport-Security','max-age=31536000');n()});
+// Neon only: keep the database awake so the first click after a pause is not slow (costs compute hours; set KEEP_DB_WARM=0 to turn off)
+if(process.env.KEEP_DB_WARM!=='0')setInterval(()=>pool.query('select 1').catch(()=>{}),24e4).unref();
 
 const q=(s,p)=>pool.query(s,p).then(r=>r.rows), one=async(s,p)=>(await q(s,p))[0];
 const err=(status,message,code)=>Object.assign(new Error(message),{status,code});
 const h=fn=>(req,res,next)=>fn(req,res,next).catch(next);
 const sha=t=>crypto.createHash('sha256').update(t).digest('hex');
-const hits=new Map();setInterval(()=>hits.clear(),36e5).unref();
-const limit=(n,ms)=>(req,res,next)=>{const k=req.ip+req.path,now=Date.now(),a=(hits.get(k)||[]).filter(t=>now-t<ms);a.push(now);hits.set(k,a);a.length>n?res.status(429).json({error:'Too many attempts. Try again in a few minutes.'}):next()};
+/* ---- rate limits: fixed window per (limit name + key). key = IP by default, or the account / email being targeted ----
+   ponytail: in-memory, per process. Running 2+ app instances needs a shared store (Redis or a Postgres table), see README "Scaling" */
+const hits=new Map();
+setInterval(()=>{const now=Date.now();for(const[k,e]of hits)if(e.reset<now)hits.delete(k)},6e4).unref();
+const ipKey=ip=>ip&&ip.includes(':')&&!ip.startsWith('::ffff:')?ip.split(':').slice(0,4).join(':'):ip; // IPv6: one /64 = one user, so rotating addresses does not dodge limits
+const limit=(name,n,ms,key=req=>ipKey(req.ip))=>(req,res,next)=>{
+  const k=name+':'+key(req),now=Date.now();let e=hits.get(k);if(!e||e.reset<now)hits.set(k,e={c:0,reset:now+ms});
+  ++e.c>n?res.status(429).json({error:'Too many attempts. Try again in a few minutes.'}):next();
+};
 const normPhone=s=>{const d=String(s||'').replace(/\D/g,'').replace(/^(91|0)(?=\d{10}$)/,'');return /^[6-9]\d{9}$/.test(d)?d:null};
 const TODAY="date_trunc('day',now() at time zone 'Asia/Kolkata') at time zone 'Asia/Kolkata'";
 
 /* ---- live updates (server-sent events) ---- */
 const subs=new Map();
 const push=(key,ev)=>subs.get(key)?.forEach(r=>r.write(`data: ${JSON.stringify(ev)}\n\n`));
+// ponytail: in-process. With 2+ instances an approval on one will not reach a phone connected to another; upgrade = Redis pub/sub (README "Scaling")
 const events=role=>(req,res)=>{
+  const k=role+':'+req.uid;if(!subs.has(k))subs.set(k,new Set());
+  if(subs.get(k).size>=10)return res.status(429).end(); // one account cannot hold open unlimited connections
   res.set({'Content-Type':'text/event-stream','Cache-Control':'no-cache',Connection:'keep-alive','X-Accel-Buffering':'no'});res.flushHeaders();res.write('retry: 3000\n\n');
-  const k=role+':'+req.uid;if(!subs.has(k))subs.set(k,new Set());subs.get(k).add(res);
-  const t=setInterval(()=>res.write(':\n\n'),25e3);req.on('close',()=>{clearInterval(t);subs.get(k)?.delete(res)});
+  subs.get(k).add(res);
+  const t=setInterval(()=>res.write(':\n\n'),25e3);req.on('close',()=>{clearInterval(t);const s=subs.get(k);s?.delete(res);if(s&&!s.size)subs.delete(k)});
 };
 
 /* ---- sessions: cached in memory so most requests skip the database lookup ---- */
 const CK={customer:'sid_c',shop:'sid_s'},sc=new Map();
+// housekeeping: drop expired cache entries every minute; expired sessions and stale reset requests every hour
+setInterval(()=>{const now=Date.now();for(const[k,c]of sc)if(c.exp<now)sc.delete(k)},6e4).unref();
+setInterval(()=>pool.query("delete from sessions where expires_at<now(); update password_resets set status='expired',resolved_at=now() where status='pending' and requested_at<now()-interval '2 days'").catch(e=>console.error('cleanup:',e.message)),36e5).unref();
 const setCookie=(res,role,t)=>res.append('Set-Cookie',`${CK[role]}=${t}; HttpOnly; Path=/; Max-Age=31536000; SameSite=Lax${PROD?'; Secure':''}`);
 async function startSession(res,role,id){
   const t=crypto.randomBytes(32).toString('hex');
@@ -49,7 +68,7 @@ async function verifyPhone(phone,body){return true}
 /* ================= CUSTOMER ================= */
 const pubC=c=>({id:c.id,name:c.name,phone:c.phone,since:c.created_at});
 const C=auth('customer');
-app.post('/api/auth/login',limit(20,6e5),h(async(req,res)=>{
+app.post('/api/auth/login',limit('login',20,6e5),h(async(req,res)=>{
   const phone=normPhone(req.body.phone),name=String(req.body.name||'').trim().replace(/\s+/g,' ').slice(0,60);
   if(!phone)throw err(400,'Enter a valid 10-digit mobile number');
   if(!await verifyPhone(phone,req.body))throw err(401,'Verification failed');
@@ -69,7 +88,7 @@ app.patch('/api/me',C,h(async(req,res)=>{
 app.get('/api/events',C,events('cust'));
 // a shop can be found by its link slug, its short code, or a pasted link
 const findShop=async key=>{key=String(key||'').trim();const m=key.match(/\/s\/([^/?#\s]+)/);if(m)key=m[1];return key?one('select * from shops where slug=lower($1) or code=upper($1)',[key]):null};
-app.get('/api/shop-public/:key',h(async(req,res)=>{const s=await findShop(req.params.key);if(!s)throw err(404,'This QR code or shop code is not valid');res.json({name:s.name,slug:s.slug})}));
+app.get('/api/shop-public/:key',limit('lookup',60,6e5),h(async(req,res)=>{const s=await findShop(req.params.key);if(!s)throw err(404,'This QR code or shop code is not valid');res.json({name:s.name,slug:s.slug})}));
 
 async function decide(id,shopId,ok){
   const c=await pool.connect();let cust;
@@ -98,12 +117,12 @@ async function requestStamp(uid,s){
   push('shop:'+s.id,{t:'pending'});return 'pending';
 }
 // scan a QR link / enter a shop code: joins the shop and asks for a stamp
-app.post('/api/scan/:key',C,limit(30,6e5),h(async(req,res)=>{
+app.post('/api/scan/:key',C,limit('stamp',30,6e5,req=>req.uid),h(async(req,res)=>{
   const s=await findShop(req.params.key);if(!s)throw err(404,'This QR code or shop code is not valid');
   res.json({status:await requestStamp(req.uid,s),shop_id:s.id});
 }));
 // "Request stamp" button on a card the customer already has
-app.post('/api/cards/:shopId/request',C,limit(30,6e5),h(async(req,res)=>{
+app.post('/api/cards/:shopId(\\d{1,9})/request',C,limit('stamp',30,6e5,req=>req.uid),h(async(req,res)=>{
   const s=await one('select s.* from shops s join cards k on k.shop_id=s.id where s.id=$1 and k.customer_id=$2',[+req.params.shopId,req.uid]);
   if(!s)throw err(404,'Card not found');res.json({status:await requestStamp(req.uid,s),shop_id:s.id});
 }));
@@ -122,35 +141,38 @@ app.get('/api/rewards',C,h(async(req,res)=>res.json(await q(`select c.id,c.title
 
 /* ================= SHOP ================= */
 const SUPPORT=(process.env.SUPPORT_WHATSAPP||'').replace(/\D/g,'').replace(/^(?=\d{10}$)/,'91');if(!/^\d{11,15}$/.test(SUPPORT))console.warn('SUPPORT_WHATSAPP is not set: password reset requests will not open WhatsApp');
-const hashPw=(p,salt=crypto.randomBytes(16).toString('hex'))=>salt+':'+crypto.scryptSync(p,salt,64).toString('hex');
-const checkPw=(p,st)=>{const[s,k]=st.split(':'),a=Buffer.from(k,'hex'),b=crypto.scryptSync(p,s,64);return a.length===b.length&&crypto.timingSafeEqual(a,b)};
+// async scrypt: the old scryptSync blocked every other request while it hashed. Same hash format, existing passwords still work
+const scrypt=require('util').promisify(crypto.scrypt),PW_MAX=200; // no max length = a 1 MB password burns CPU
+const hashPw=async(p,salt=crypto.randomBytes(16).toString('hex'))=>salt+':'+(await scrypt(p,salt,64)).toString('hex');
+const checkPw=async(p,st)=>{if(p.length>PW_MAX)return false;const[s,k]=st.split(':'),a=Buffer.from(k,'hex'),b=await scrypt(p,s,64);return a.length===b.length&&crypto.timingSafeEqual(a,b)};
+const pwProblem=pw=>pw.length<8?'at least 8 characters':pw.length>PW_MAX?`at most ${PW_MAX} characters`:null;
 const slugify=s=>(s.toLowerCase().replace(/[^a-z0-9]+/g,'-').replace(/^-|-$/g,'').slice(0,24)||'shop')+'-'+crypto.randomBytes(2).toString('hex');
 const genCode=()=>Array.from(crypto.randomBytes(6),b=>'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'[b%32]).join('');
-app.post('/api/shop/signup',limit(10,36e5),h(async(req,res)=>{
+app.post('/api/shop/signup',limit('signup',10,36e5),h(async(req,res)=>{
   const name=String(req.body.name||'').trim().slice(0,80),email=String(req.body.email||'').trim().toLowerCase(),pw=String(req.body.password||'');
   if(name.length<2)throw err(400,'Enter your shop name');
   if(!/^\S+@\S+\.\S+$/.test(email))throw err(400,'Enter a valid email');
-  if(pw.length<8)throw err(400,'Password must be at least 8 characters');
+  if(pwProblem(pw))throw err(400,'Password must be '+pwProblem(pw));
   if(await one('select 1 from shops where email=$1',[email]))throw err(409,'This email is already registered');
-  let s;for(let i=0;i<5&&!s;i++)try{s=await one('insert into shops(slug,code,name,email,pass_hash,phone) values($1,$2,$3,$4,$5,$6) returning id',[slugify(name),genCode(),name,email,hashPw(pw),normPhone(req.body.phone)])}catch(e){if(e.code!=='23505')throw e}
+  let s;for(let i=0;i<5&&!s;i++)try{s=await one('insert into shops(slug,code,name,email,pass_hash,phone) values($1,$2,$3,$4,$5,$6) returning id',[slugify(name),genCode(),name,email,await hashPw(pw),normPhone(req.body.phone)])}catch(e){if(e.code!=='23505')throw e}
   if(!s)throw err(500,'Could not create shop, try again');
   await startSession(res,'shop',s.id);res.json({ok:true});
 }));
-app.post('/api/shop/login',limit(15,6e5),h(async(req,res)=>{
+app.post('/api/shop/login',limit('shop-login',15,6e5),limit('shop-login-email',10,9e5,req=>String(req.body.email||'').trim().toLowerCase()),h(async(req,res)=>{
   const s=await one('select id,pass_hash from shops where email=$1',[String(req.body.email||'').trim().toLowerCase()]);
-  if(!s||!checkPw(String(req.body.password||''),s.pass_hash))throw err(401,'Wrong email or password');
+  if(!s||!await checkPw(String(req.body.password||''),s.pass_hash))throw err(401,'Wrong email or password');
   await startSession(res,'shop',s.id);res.json({ok:true});
 }));
 app.post('/api/shop/logout',logout('shop'));
 // "Forgot password": the shop picks a NEW password, it is stored hashed in a pending request, and nothing changes until the owner approves it in the database
-app.post('/api/shop/reset-request',limit(5,36e5),h(async(req,res)=>{
+app.post('/api/shop/reset-request',limit('reset',5,36e5),h(async(req,res)=>{
   const email=String(req.body.email||'').trim().toLowerCase(),pw=String(req.body.password||'');
   if(!/^\S+@\S+\.\S+$/.test(email))throw err(400,'Enter your shop email');
-  if(pw.length<8)throw err(400,'New password must be at least 8 characters');
-  const ref=String(crypto.randomInt(1000,10000)),s=await one('select id,name,phone from shops where email=$1',[email]);
+  if(pwProblem(pw))throw err(400,'New password must be '+pwProblem(pw));
+  const ref=String(crypto.randomInt(100000,1000000)),hash=await hashPw(pw),s=await one('select id,name,phone from shops where email=$1',[email]);
   if(s){ // same answer whether or not the email exists, so nobody can probe which emails are registered
-    await q("update password_resets set status='expired',resolved_at=now() where shop_id=$1 and status='pending'",[s.id]);
-    await q('insert into password_resets(shop_id,ref,email,shop_name,shop_phone,new_pass_hash) values($1,$2,$3,$4,$5,$6)',[s.id,ref,email,s.name,s.phone,hashPw(pw)]);
+    // older pending requests are NOT expired here: otherwise anyone could cancel a real request by sending one after it. The owner approves by ref; stale ones expire after 2 days
+    await q('insert into password_resets(shop_id,ref,email,shop_name,shop_phone,new_pass_hash) values($1,$2,$3,$4,$5,$6)',[s.id,ref,email,s.name,s.phone,hash]);
   }
   res.json({ok:true,code:'RST-'+ref,support:SUPPORT||null});
 }));
@@ -196,7 +218,7 @@ app.get('/api/shop/qr.svg',S,h(async(req,res)=>{
   const s=await one('select slug from shops where id=$1',[req.uid]);
   res.type('image/svg+xml').send(await QR.toString(`${BASE(req)}/s/${s.slug}`,{type:'svg',margin:1,width:320}));
 }));
-app.post('/api/shop/requests/:id/:act(approve|decline)',S,h(async(req,res)=>{await decide(+req.params.id,req.uid,req.params.act==='approve');res.json({ok:true})}));
+app.post('/api/shop/requests/:id(\\d{1,9})/:act(approve|decline)',S,h(async(req,res)=>{await decide(+req.params.id,req.uid,req.params.act==='approve');res.json({ok:true})}));
 async function rewardBody(req){
   const title=String(req.body.title||'').trim().slice(0,80),n=Math.floor(+req.body.stamps_required),d=Math.floor(+req.body.expiry_days)||30;
   const sh=await one('select card_size from shops where id=$1',[req.uid]);
@@ -206,15 +228,15 @@ async function rewardBody(req){
   return [title,n,d];
 }
 app.post('/api/shop/rewards',S,h(async(req,res)=>{await q('insert into rewards(shop_id,title,stamps_required,expiry_days) values($1,$2,$3,$4)',[req.uid,...await rewardBody(req)]);res.json({ok:true})}));
-app.patch('/api/shop/rewards/:id',S,h(async(req,res)=>{await q('update rewards set title=$3,stamps_required=$4,expiry_days=$5 where id=$1 and shop_id=$2',[+req.params.id,req.uid,...await rewardBody(req)]);res.json({ok:true})}));
-app.delete('/api/shop/rewards/:id',S,h(async(req,res)=>{await q('update rewards set active=false where id=$1 and shop_id=$2',[+req.params.id,req.uid]);res.json({ok:true})}));
-app.post('/api/shop/claims/:id/redeem',S,h(async(req,res)=>{
+app.patch('/api/shop/rewards/:id(\\d{1,9})',S,h(async(req,res)=>{await q('update rewards set title=$3,stamps_required=$4,expiry_days=$5 where id=$1 and shop_id=$2',[+req.params.id,req.uid,...await rewardBody(req)]);res.json({ok:true})}));
+app.delete('/api/shop/rewards/:id(\\d{1,9})',S,h(async(req,res)=>{await q('update rewards set active=false where id=$1 and shop_id=$2',[+req.params.id,req.uid]);res.json({ok:true})}));
+app.post('/api/shop/claims/:id(\\d{1,9})/redeem',S,h(async(req,res)=>{
   const r=await one("update claims set status='redeemed',redeemed_at=now() where id=$1 and shop_id=$2 and status='earned' and expires_at>now() returning customer_id",[+req.params.id,req.uid]);
   if(!r)throw err(404,'Reward not available (already redeemed or expired)');
   push('cust:'+r.customer_id,{t:'update'});res.json({ok:true});
 }));
 // add one or many customers (typed in, or from a CSV/Excel list): creates their cards automatically
-app.post('/api/shop/customers/import',S,limit(30,36e5),h(async(req,res)=>{
+app.post('/api/shop/customers/import',S,limit('import',30,36e5,req=>req.uid),h(async(req,res)=>{
   const rows=Array.isArray(req.body.rows)?req.body.rows:[];if(!rows.length)throw err(400,'No customers to add');if(rows.length>2000)throw err(400,'Please import 2000 customers or fewer at a time');
   const sh=await one('select card_size from shops where id=$1',[req.uid]),seen=new Set(),ok=[],bad=[];
   rows.forEach((r,i)=>{const p=normPhone(r.phone),n=String(r.name||'').trim().replace(/\s+/g,' ').slice(0,60)||'Customer',st=Math.min(Math.max(parseInt(r.stamps)||0,0),sh.card_size-1);
@@ -228,7 +250,7 @@ app.post('/api/shop/customers/import',S,limit(30,36e5),h(async(req,res)=>{
   push('shop:'+req.uid,{t:'update'});
   res.json({total:rows.length,new_customers:r.new_customers,cards_added:r.cards_added,already:ok.length-r.cards_added,invalid:bad});
 }));
-app.delete('/api/shop/customers/:id',S,h(async(req,res)=>{
+app.delete('/api/shop/customers/:id(\\d{1,9})',S,h(async(req,res)=>{
   const a=[+req.params.id,req.uid];
   await q('with a as(delete from stamp_requests where customer_id=$1 and shop_id=$2),b as(delete from claims where customer_id=$1 and shop_id=$2) delete from cards where customer_id=$1 and shop_id=$2',a);
   push('cust:'+a[0],{t:'update'});res.json({ok:true});
@@ -241,4 +263,8 @@ app.get(['/','/s/:slug'],pub('customer.html'));app.get('/shop',pub('shop.html'))
 app.use(express.static(path.join(__dirname,'public'),{maxAge:PROD?'1h':0}));
 app.use('/api',(q,r)=>r.status(404).json({error:'Not found'}));
 app.use((e,req,res,next)=>{if(!e.status)console.error(e);res.status(e.status||500).json({error:e.status?e.message:'Server error. Please try again.',code:e.code})});
-app.listen(process.env.PORT||3000,()=>console.log('Stampwise running'));
+if(PROD&&!process.env.BASE_URL)console.warn('BASE_URL is not set: QR codes will use whatever host the request came in on');
+const server=app.listen(process.env.PORT||3000,()=>console.log('Stampwise running'));
+// hosts (Render, Railway, Fly, Docker, Kubernetes) send SIGTERM before replacing the app: finish requests, close live streams and DB connections
+const stop=()=>{server.close(()=>pool.end().finally(()=>process.exit(0)));subs.forEach(set=>set.forEach(r=>r.end()));setTimeout(()=>process.exit(0),1e4).unref()};
+process.on('SIGTERM',stop);process.on('SIGINT',stop);
