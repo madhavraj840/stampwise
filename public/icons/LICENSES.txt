@@ -1,0 +1,2 @@
+Tabler Icons - MIT License - Copyright (c) 2020-2024 Pawel Kuna - https://github.com/tabler/tabler-icons
+Phosphor Icons - MIT License - Copyright (c) 2023 Phosphor Icons - https://github.com/phosphor-icons/core

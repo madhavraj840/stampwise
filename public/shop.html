@@ -1,0 +1,235 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Stampwise · Shop</title><meta name="theme-color" content="#E4E9EC"><link rel="stylesheet" href="/app.css"></head>
+<body><div id="app"></div>
+<script src="/brand.js"></script><script src="/icons.js"></script><script src="/common.js"></script>
+<script>
+let D=null,tab='overview',viewTab='',lastP=-1,cq='',cf='all',cs='recent',d1='',d2='';
+const app=$('#app'),TABS=[['overview','Overview','layout-dashboard'],['approvals','Approvals','inbox'],['customers','Customers','users'],['rewards','Rewards','gift'],['winners','Winners','trophy'],['settings','Settings','settings']];
+const bar=r=>`<header class="bar-top"><span class="word">${BRAND}</span><span class="t"></span><span class="side">${r||'Shop dashboard'}</span></header>`;
+const TPL=[['Thank you','Hi {name}, thanks for visiting {shop}! You now have {stamps}/{size} stamps. See you soon.'],['Reward ready','Hi {name}, you have a reward waiting at {shop}. Show your card to claim it.'],['Card ready','Hi {name}, your {shop} loyalty card is ready. Open {app} and log in with this number to see it.'],['We miss you','Hi {name}, we miss you at {shop}! Visit us soon to keep collecting stamps.']];
+
+/* ---------- sign in / up ---------- */
+let authFails=0;
+function authView(mode='login'){
+  const su=mode==='signup';D=null;viewTab='';
+  app.innerHTML=`${bar()}<main class="auth"><span class="lbl">${su?'Free during early access':'Welcome back'}</span><h1>${su?'Create your shop account':'Shop login'}</h1>
+  <div style="margin-top:26px">${su?'<label class="lbl">Shop name</label><input id="n" maxlength="80" autocomplete="organization"><label class="lbl">Shop phone (optional)</label><input id="ph" inputmode="numeric" autocomplete="tel">':''}
+  <label class="lbl">Email</label><input id="e" type="email" autocomplete="username"><label class="lbl">Password${su?' (min 8 characters)':''}</label><input id="pw" type="password" autocomplete="${su?'new':'current'}-password">
+  ${su?'<label class="lbl">Confirm password</label><input id="pw2" type="password" autocomplete="new-password">':''}
+  <label class="chk"><input type="checkbox" id="showpw"> Show password</label>
+  <button class="btn big full" id="go">${su?'Create account':'Log in'}</button></div>
+  ${su?'':`<div id="rs" class="note ${authFails>=2?'':'hide'}" style="margin-top:18px"><b>Forgot your password?</b><div class="sm" style="margin:4px 0 12px;font-weight:400">Send us a reset request on WhatsApp. We will confirm it is you and reset it for you.</div><button class="btn red sm" onclick="resetView()">${ic('brand-whatsapp',20)}Reset password via WhatsApp</button></div>`}
+  <p style="text-align:center;margin-top:18px"><a href="#" id="sw" class="sm" style="display:inline-block;padding:10px">${su?'Already have an account? Log in':'New shop? Create an account'}</a></p><p style="text-align:center;margin-top:8px"><a href="/" class="sm mu" style="display:inline-block;padding:10px">Customer? Open your card</a></p></main>`;
+  $('#sw').onclick=ev=>{ev.preventDefault();authView(su?'login':'signup')};
+  $('#showpw').onchange=ev=>['pw','pw2'].forEach(k=>{const f=$('#'+k);if(f)f.type=ev.target.checked?'text':'password'});
+  const submit=async()=>{
+    if(su&&$('#pw').value!==$('#pw2').value)return toast('The two passwords do not match');
+    $('#go').disabled=true;try{await api(su?'/api/shop/signup':'/api/shop/login','POST',{name:su&&$('#n').value,phone:su&&$('#ph').value,email:$('#e').value,password:$('#pw').value});authFails=0;boot()}catch(x){toast(x.message);$('#go').disabled=false;if(!su&&x.status===401){authFails++;if(authFails>=2)$('#rs').classList.remove('hide')}}};
+  $('#go').onclick=submit;
+  // NOTE: never return false from a key handler: it cancels the keypress and blocks typing
+  ['pw','pw2','e'].forEach(k=>{const f=$('#'+k);if(f)f.addEventListener('keydown',ev=>{if(ev.key==='Enter')submit()})});
+}
+
+/* ---------- forgot password: request goes to the owner via WhatsApp ---------- */
+function resetView(){
+  const em=$('#e')?$('#e').value:'';
+  app.innerHTML=`${bar()}<main class="auth"><span class="lbl">Password reset</span><h1>Choose a new password</h1>
+  <p class="mu" style="margin:12px 0 22px">Pick the password you want. We will switch to it after confirming this request really comes from you.</p>
+  <label class="lbl">Shop email</label><input id="re" type="email" autocomplete="username" value="${esc(em)}"><label class="lbl">New password (min 8 characters)</label><input id="rp" type="password" autocomplete="new-password">
+  <label class="lbl">Confirm new password</label><input id="rp2" type="password" autocomplete="new-password">
+  <label class="chk"><input type="checkbox" id="rshow"> Show password</label>
+  <button class="btn red big full" id="rgo">${ic('brand-whatsapp',22)}Send request on WhatsApp</button><p style="text-align:center;margin-top:16px"><a href="#" id="rback" class="sm" style="display:inline-block;padding:10px">Back to login</a></p></main>`;
+  $('#rback').onclick=ev=>{ev.preventDefault();authView()};
+  $('#rshow').onchange=ev=>['rp','rp2'].forEach(k=>$('#'+k).type=ev.target.checked?'text':'password');
+  $('#rgo').onclick=async()=>{
+    if($('#rp').value!==$('#rp2').value)return toast('The two passwords do not match');
+    $('#rgo').disabled=true;
+    try{const r=await api('/api/shop/reset-request','POST',{email:$('#re').value,password:$('#rp').value});
+      const msg=`Hi, please reset my shop password.\nShop email: ${$('#re').value.trim()}\nRequest code: ${r.code}`,link=r.support?`https://wa.me/${r.support}?text=${encodeURIComponent(msg)}`:'';
+      app.innerHTML=`${bar()}<main class="auth"><span class="lbl">Request code ${esc(r.code)}</span><h1>One more step</h1>
+      <p class="mu" style="margin:12px 0 22px">${link?'Tap the button to send us the WhatsApp message. Send it from the phone number registered with your shop.':'Password reset is not switched on yet. Please contact support directly.'} Once we confirm it is you, log in with the new password you just chose.</p>
+      ${link?`<a class="btn red big full" href="${esc(link)}" target="_blank" rel="noopener">Open WhatsApp</a>`:''}<p style="text-align:center;margin-top:16px"><a href="#" id="rb2" class="sm" style="display:inline-block;padding:10px">Back to login</a></p></main>`;
+      $('#rb2').onclick=ev=>{ev.preventDefault();authFails=0;authView()};if(link)window.open(link,'_blank','noopener');
+    }catch(x){toast(x.message);$('#rgo').disabled=false}};
+}
+
+/* ---------- data: one request, rendered from cache, refreshed in background ---------- */
+async function load(){
+  const n=await api('/api/shop/bootstrap'),raw=JSON.stringify(n),changed=!D||raw!==D.raw;
+  if(lastP>=0&&n.pending.length>lastP)alertNew(n.pending[n.pending.length-1]);
+  lastP=n.pending.length;n.raw=raw;D=n;return changed;
+}
+function alertNew(p){
+  try{const c=new AudioContext(),o=c.createOscillator();o.connect(c.destination);o.frequency.value=880;o.start();o.stop(c.currentTime+.18)}catch{}
+  if(window.Notification&&Notification.permission==='granted')new Notification('New stamp request',{body:p.name+' · '+fmtPhone(p.phone)});
+}
+const refresh=async(force)=>{try{if(await load()||force)paint(force)}catch(e){if(e.status===401)authView()}};
+function go(t){tab=t;paint();refresh()}
+
+/* ---------- shell ---------- */
+function mount(){
+  app.innerHTML=`${bar()}<div class="dash"><div class="top"><div><span class="lbl">Shop dashboard</span><h2 id="hname" style="margin-top:2px"></h2></div><button class="btn line sm" onclick="signOut()">${ic('logout',20)}Log out</button></div>
+  <div class="tabs" id="tabs"></div><div id="view"></div></div><div id="float"></div>`;viewTab='';
+}
+function paint(force){
+  if(!D)return;if(!$('#view'))mount();
+  const n=D.pending.length;document.title=(n?`(${n}) `:'')+BRAND+' · Shop';$('#hname').textContent=D.me.name;
+  $('#tabs').innerHTML=TABS.map(([k,l,i])=>`<button class="${k===tab?'on':''}" onclick="go('${k}')">${ic(i,20)}${l}${k==='approvals'&&n?`<span class="badge">${n}</span>`:''}</button>`).join('');
+  const f=n&&tab!=='approvals'?D.pending[0]:null;
+  $('#float').innerHTML=f?`<div class="float"><span class="lbl">New stamp request${n>1?' · '+(n-1)+' more waiting':''}</span><div class="row" style="margin:8px 0 12px"><div><b>${esc(f.name)}</b><div class="sm" style="color:#B8C5D0">${fmtPhone(f.phone)} · ${f.stamps}/${D.me.card_size} stamps</div></div></div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn red sm" onclick="decide(${f.id},'approve')">${ic('check',20)}Approve</button><button class="btn sm" onclick="decide(${f.id},'decline')">${ic('x',20)}Decline</button><button class="btn sm" onclick="go('approvals')">All requests</button></div></div>`:'';
+  // forms (rewards/settings) are only rebuilt on tab change or after saving, so typing is never wiped
+  if(viewTab===tab&&!force&&(tab==='rewards'||tab==='settings'))return;
+  if(viewTab===tab&&tab==='customers'&&$('#clist')&&!force)return list();
+  viewTab=tab;$('#view').innerHTML=({overview,approvals,customers,rewards,winners,settings})[tab]();if(tab==='customers')list();
+}
+
+/* ---------- overview ---------- */
+function chart(vals,labels){const W=600,H=180,P=28,mx=Math.max(1,...vals),x=i=>P+i*(W-2*P)/(vals.length-1),y=v=>H-26-v*(H-56)/mx;
+  return `<svg viewBox="0 0 ${W} ${H}" style="width:100%"><line x1="${P}" x2="${W-P}" y1="${H-26}" y2="${H-26}" stroke="#C9D2D8" stroke-width="2"/><polygon points="${P},${H-26} ${vals.map((v,i)=>x(i)+','+y(v)).join(' ')} ${W-P},${H-26}" fill="rgba(11,107,87,.12)"/><polyline points="${vals.map((v,i)=>x(i)+','+y(v)).join(' ')}" fill="none" stroke="#0B6B57" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"/>
+  ${vals.map((v,i)=>`<circle cx="${x(i)}" cy="${y(v)}" r="5" fill="#fff" stroke="#0B6B57" stroke-width="3"/><text x="${x(i)}" y="${y(v)-10}" font-size="12" text-anchor="middle" font-weight="700" fill="#14212C">${v}</text><text x="${x(i)}" y="${H-8}" font-size="10" text-anchor="middle" fill="#546270">${esc(labels[i])}</text>`).join('')}</svg>`}
+function overview(){
+  const s=D.stats,rep=s.customers?Math.round(s.repeat/s.customers*100):0;
+  return `<div class="g4"><div><span class="ico">${ic('check',22)}</span><span class="num">${s.today}</span><span class="lbl">Stamps today</span></div><div><span class="ico">${ic('users',22)}</span><span class="num">${s.customers}</span><span class="lbl">Customers</span></div><div><span class="ico">${ic('gift',22)}</span><span class="num">${s.earned}</span><span class="lbl">Rewards earned</span></div><div><span class="ico">${ic('refresh',22)}</span><span class="num">${rep}%</span><span class="lbl">Repeat customers</span></div></div>
+  <div class="g2"><div class="rule"><h3>Stamps, last 7 days</h3>${chart(D.days.map(d=>d.scans),D.days.map(d=>d.label))}</div><div class="rule"><h3>Customer growth</h3>${chart(D.days.map(d=>d.customers),D.days.map(d=>d.label))}</div></div>
+  <div class="g2"><div class="rule"><h3>Reward programme</h3>${D.rewards.map(r=>`<div class="row" style="padding:10px 0;border-bottom:1px solid var(--hair)"><span>${esc(r.title)}</span><span class="tag">${r.stamps_required} stamps</span></div>`).join('')||'<p class="mu">No rewards yet. <a href="#" onclick="go(\'rewards\');return false" style="text-decoration:underline">Add one</a>.</p>'}</div>
+  <div class="rule"><h3>Get customers scanning</h3><p class="mu">Show your QR at the counter. Customers can also type your shop code: <b class="mono" style="font-size:22px;letter-spacing:.1em;color:var(--ink)">${esc(D.me.code)}</b></p><p style="margin-top:12px"><button class="btn sm" onclick="go('settings')">QR and settings</button></p></div></div>`;
+}
+
+/* ---------- approvals ---------- */
+function approvals(){
+  return `<div class="rule"><h3>Stamp requests</h3>${D.pending.map(r=>`<div class="req"><div><b style="font-size:17px">${esc(r.name)}</b> <span class="mu">${fmtPhone(r.phone)}</span><div class="sm mu">${r.stamps} of ${D.me.card_size} stamps · ${r.visits} visits · ${fmtTime(r.created_at)}</div></div>
+    <div style="display:flex;gap:8px"><button class="btn sm" onclick="decide(${r.id},'approve')">${ic('check',20)}Approve</button><button class="btn line sm" onclick="decide(${r.id},'decline')">${ic('x',20)}Decline</button></div></div>`).join('')
+    ||`<div class="empty"><b>No pending requests</b>New requests appear here instantly${D.stats.customers?'.':'. Print your QR from Settings to get started.'}</div>`}</div>`;
+}
+async function decide(id,act){ // optimistic: the row disappears at once
+  D.pending=D.pending.filter(p=>p.id!==id);lastP=D.pending.length;paint(true);
+  try{await api(`/api/shop/requests/${id}/${act}`,'POST');toast(act==='approve'?'Stamp approved':'Declined')}catch(e){toast(e.message)}refresh(true);
+}
+
+/* ---------- customers ---------- */
+function customers(){
+  return `<div class="row" style="margin-bottom:16px;flex-wrap:wrap"><h3>Your customers</h3><button class="btn red sm" onclick="addCust()">${ic('user-plus',20)}Add or import customers</button></div><div class="tool"><div><label class="lbl">Search</label><input id="cq" placeholder="Name or phone" value="${esc(cq)}"></div><div><label class="lbl">Last visit from</label><input id="d1" type="date" value="${d1}"></div><div><label class="lbl">to</label><input id="d2" type="date" value="${d2}"></div>
+  <div><label class="lbl">Sort</label><select id="cs"><option value="recent">Latest visit</option><option value="stamps">Most stamps</option><option value="visits">Most visits</option><option value="name">Name A to Z</option></select></div><div><button class="btn line sm" style="margin-bottom:16px" onclick="csv()">${ic('download',20)}CSV</button></div></div>
+  <div class="chips" id="chips"></div><div id="clist"></div>
+  ${setTimeout(()=>{['cq','d1','d2','cs'].forEach(k=>{const e=$('#'+k);if(k==='cs')e.value=cs;e.oninput=()=>{({cq:()=>cq=e.value.trim().toLowerCase(),d1:()=>d1=e.value,d2:()=>d2=e.value,cs:()=>cs=e.value})[k]();list()}})},0)&&''}`;
+}
+const view=()=>{let r=D.customers.filter(c=>(!cq||c.name.toLowerCase().includes(cq)||c.phone.includes(cq))&&
+  (cf==='all'||(cf==='active'&&c.stamps>0)||(cf==='done'&&c.cycles>0)||(cf==='rw'&&c.rewards_waiting>0))&&
+  (!d1||(c.last_visit&&c.last_visit.slice(0,10)>=d1))&&(!d2||(c.last_visit&&c.last_visit.slice(0,10)<=d2)));
+  const k={recent:(a,b)=>(b.last_visit||'').localeCompare(a.last_visit||''),stamps:(a,b)=>b.stamps-a.stamps,visits:(a,b)=>b.visits-a.visits,name:(a,b)=>a.name.localeCompare(b.name)}[cs];return r.sort(k)};
+function list(){
+  const all=D.customers,cnt={all:all.length,active:all.filter(c=>c.stamps>0).length,done:all.filter(c=>c.cycles>0).length,rw:all.filter(c=>c.rewards_waiting>0).length};
+  $('#chips').innerHTML=[['all','All'],['active','Active'],['done','Completed card'],['rw','Rewards pending']].map(([k,l])=>`<button class="chip ${cf===k?'on':''}" onclick="cf='${k}';list()">${l} ${cnt[k]}</button>`).join('');
+  const r=view();
+  $('#clist').innerHTML=r.map(c=>`<details class="cu"><summary><div><b>${esc(c.name)}</b><div class="sm mu">${fmtPhone(c.phone)}</div></div><div><span class="mono" style="font-size:22px">${c.stamps}</span><span class="mu">/${D.me.card_size}</span></div>
+    <div class="hm sm">${c.visits} visits<div class="mu">${fmtTime(c.last_visit)}</div></div><div class="hm">${c.rewards_waiting?`<span class="tag red">${c.rewards_waiting} reward${c.rewards_waiting>1?'s':''} waiting</span>`:''}</div>
+    <button class="btn sm" onclick="event.preventDefault();wa(${c.id})" aria-label="Message ${esc(c.name)} on WhatsApp">${ic('brand-whatsapp',20)}Message</button></summary>
+    <div class="more"><div><span class="lbl">Total visits</span><div class="num" style="font-size:28px">${c.visits}</div></div><div><span class="lbl">Cards completed</span><div class="num" style="font-size:28px">${c.cycles}</div></div><div><span class="lbl">Rewards earned</span><div class="num" style="font-size:28px">${c.rewards_earned}</div></div><div><span class="lbl">Redeemed</span><div class="num" style="font-size:28px">${c.rewards_redeemed}</div></div>
+    <div style="grid-column:1/-1"><span class="lbl">Recent visits</span><div class="sm">${c.history.length?c.history.map(t=>fmtTime(t)).join(' · '):'No approved visits yet'}</div><div class="sm mu" style="margin-top:6px">Joined ${fmtDate(c.joined)}</div></div>
+    <div style="grid-column:1/-1"><button class="btn line sm" onclick="delCust(${c.id})">Remove customer</button> <span class="sm mu">Clears their stamps and history at this shop.</span></div></div></details>`).join('')||'<div class="empty"><b>No customers found</b>Share your QR code to start building your customer base.</div>';
+}
+function csv(){const q=s=>'"'+String(s??'').replace(/"/g,'""')+'"',r=view();
+  const t=['Name,Phone,Stamps,Visits,Cards completed,Rewards earned,Last visit',...r.map(c=>[q(c.name),c.phone,c.stamps,c.visits,c.cycles,c.rewards_earned,q(c.last_visit?new Date(c.last_visit).toISOString():'')].join(','))].join('\n');
+  const a=document.createElement('a');a.href=URL.createObjectURL(new Blob([t],{type:'text/csv'}));a.download='customers.csv';a.click()}
+async function delCust(id){if(!confirm('Remove this customer? Their stamps, visits and rewards at this shop are deleted.'))return;try{await api('/api/shop/customers/'+id,'DELETE');toast('Customer removed');await refresh(true)}catch(e){toast(e.message)}}
+function wa(id){ // free click-to-chat: opens the owner's own WhatsApp with the message ready
+  const c=D.customers.find(x=>x.id===id),fill=t=>t.replace('{name}',c.name.split(' ')[0]).replace('{shop}',D.me.name).replace('{stamps}',c.stamps).replace('{size}',D.me.card_size).replace('{app}',location.origin);
+  sheet(`<span class="lbl">WhatsApp · ${esc(c.name)} · ${fmtPhone(c.phone)}</span><h2 style="margin:6px 0 14px">Send a message</h2><div class="chips">${TPL.map((t,i)=>`<button class="chip" onclick="$('#wm').value=window.__t[${i}]">${t[0]}</button>`).join('')}</div>
+    <textarea id="wm">${esc(fill(TPL[0][1]))}</textarea><p class="sm mu" style="margin-bottom:14px">This opens WhatsApp on your phone or computer with the message ready. You tap Send, so it goes from your own number.</p>
+    <button class="btn red full" onclick="window.open('https://wa.me/91${c.phone}?text='+encodeURIComponent($('#wm').value),'_blank');closeSheet()">Open WhatsApp</button>`,1);window.__t=TPL.map(t=>fill(t[1]));
+}
+
+
+/* ---------- add / import customers ---------- */
+const normP=v=>{const d=String(v??'').replace(/\D/g,'').replace(/^(91|0)(?=\d{10}$)/,'');return /^[6-9]\d{9}$/.test(d)?d:null};
+function parseCSV(t){const rows=[];let r=[],f='',q=false;t=t.replace(/^\uFEFF/,'');for(let i=0;i<t.length;i++){const c=t[i];
+  if(q){if(c==='"'){if(t[i+1]==='"'){f+='"';i++}else q=false}else f+=c}else if(c==='"')q=true;else if(c===','||c===';'||c==='\t'){r.push(f);f=''}
+  else if(c==='\n'||c==='\r'){if(c==='\r'&&t[i+1]==='\n')i++;r.push(f);rows.push(r);r=[];f=''}else f+=c}r.push(f);rows.push(r);return rows.filter(x=>x.some(v=>String(v).trim()))}
+const loadXLSX=()=>window.XLSX?Promise.resolve():new Promise((ok,no)=>{const s=document.createElement('script');s.src='https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js';s.onload=ok;s.onerror=()=>no(new Error('Could not load the Excel reader. Check your internet, or save the sheet as CSV.'));document.head.append(s)});
+function toRecords(rows){
+  let m={n:0,p:1,s:2},start=0;const h=rows[0].map(x=>String(x).toLowerCase().trim()),pi=h.findIndex(x=>/phone|mobile|number|contact/.test(x));
+  if(pi>=0){start=1;m.p=pi;const ni=h.findIndex(x=>/name|customer/.test(x));m.n=ni>=0?ni:(pi===0?1:0);m.s=h.findIndex(x=>/stamp/.test(x))}
+  return rows.slice(start).map((r,i)=>({row:i+start+1,name:String(r[m.n]??'').trim(),phone:r[m.p]??'',stamps:m.s>=0?parseInt(r[m.s])||0:0}));
+}
+let imp=[];
+function addCust(mode='one'){
+  const one=mode==='one';
+  sheet(`<span class="lbl">Customers</span><h2 style="margin:6px 0 14px">Add customers</h2><div class="chips"><button class="chip ${one?'on':''}" onclick="addCust('one')">Add one</button><button class="chip ${one?'':'on'}" onclick="addCust('many')">Import a list</button></div>
+  ${one?`<label class="lbl">Name</label><input id="an" maxlength="60" placeholder="e.g. Rahul Sharma"><label class="lbl">Mobile number</label><input id="ap" inputmode="numeric" placeholder="98765 43210">
+    <label class="lbl">Stamps already collected (optional, 0 to ${D.me.card_size-1})</label><input id="as" type="number" min="0" max="${D.me.card_size-1}" value="0"><button class="btn full" onclick="saveOne()">Add customer and create card</button>`
+  :`<p class="sm mu" style="margin-bottom:12px">Upload a <b>CSV or Excel</b> file with the columns <b>Name, Phone, Stamps</b> (Stamps is optional). A card is created for every number automatically.</p>
+    <button class="btn line sm" onclick="tpl()" style="margin-bottom:14px">${ic('download',20)}Download template</button>
+    <input type="file" id="af" accept=".csv,.xlsx,.xls,text/csv" style="padding:10px"><div id="ap2"></div>`}
+  <p class="sm mu" style="margin-top:14px">Only add customers who have agreed to hear from you. Nothing is sent to them automatically.</p>`,1);
+  if(!one)$('#af').onchange=readFile;else $('#an').focus();
+}
+function tpl(){const a=document.createElement('a');a.href=URL.createObjectURL(new Blob(['Name,Phone,Stamps\nRahul Sharma,9876543210,2\nAsha Verma,9123456780,0\n'],{type:'text/csv'}));a.download='customers-template.csv';a.click()}
+async function readFile(ev){
+  const f=ev.target.files[0];if(!f)return;const box=$('#ap2');box.innerHTML='<p class="mu">Reading file...</p>';
+  try{let rows;if(/\.csv$/i.test(f.name)||f.type==='text/csv')rows=parseCSV(await f.text());
+    else{await loadXLSX();const wb=XLSX.read(await f.arrayBuffer(),{type:'array'});rows=XLSX.utils.sheet_to_json(wb.Sheets[wb.SheetNames[0]],{header:1,raw:false,defval:''})}
+    if(!rows.length)throw new Error('The file is empty');
+    const rec=toRecords(rows),good=rec.filter(r=>normP(r.phone)),bad=rec.filter(r=>!normP(r.phone));imp=good;
+    box.innerHTML=`<div class="note" style="margin-top:14px">${good.length} valid number${good.length===1?'':'s'}${bad.length?` · ${bad.length} to skip`:''}</div>
+    ${good.slice(0,4).map(r=>`<div class="sm" style="padding:6px 0;border-bottom:1px solid var(--line)">${esc(r.name||'Customer')} · ${fmtPhone(normP(r.phone))}${r.stamps?` · ${r.stamps} stamps`:''}</div>`).join('')}${good.length>4?`<div class="sm mu" style="padding-top:6px">and ${good.length-4} more</div>`:''}
+    ${bad.length?`<p class="sm mu" style="margin-top:10px">Skipped rows: ${bad.slice(0,5).map(r=>'row '+r.row).join(', ')}${bad.length>5?'...':''} (invalid mobile number)</p>`:''}
+    ${good.length?`<button class="btn full" style="margin-top:16px" id="doimp" onclick="runImport()">Import ${good.length} customer${good.length===1?'':'s'}</button>`:''}`;
+  }catch(e){box.innerHTML=`<div class="note">${esc(e.message)}</div>`}
+}
+async function saveOne(){try{const r=await api('/api/shop/customers/import','POST',{rows:[{name:$('#an').value,phone:$('#ap').value,stamps:$('#as').value}]});closeSheet();
+  toast(r.invalid.length?r.invalid[0].reason:r.cards_added?'Customer added, card created':'This customer already has a card');await refresh(true)}catch(e){toast(e.message)}}
+async function runImport(){const b=$('#doimp');b.disabled=true;b.textContent='Importing...';try{const r=await api('/api/shop/customers/import','POST',{rows:imp.map(x=>({row:x.row,name:x.name,phone:x.phone,stamps:x.stamps}))});closeSheet();
+  toast(`${r.cards_added} card${r.cards_added===1?'':'s'} created${r.already?` · ${r.already} already had one`:''}${r.invalid.length?` · ${r.invalid.length} skipped`:''}`);await refresh(true)}catch(e){toast(e.message);b.disabled=false;b.textContent='Try again'}}
+
+/* ---------- rewards ---------- */
+function rewards(){
+  return `<div class="g2"><div class="rule"><h3>Reward ladder</h3>${D.rewards.map(r=>`<div class="req"><div><b>${esc(r.title)}</b><div class="sm mu">At ${r.stamps_required} stamps · valid ${r.expiry_days} days after earning</div></div><div style="display:flex;gap:8px"><button class="btn line sm" onclick="editReward(${r.id})">Edit</button><button class="btn line sm" onclick="delReward(${r.id})">Remove</button></div></div>`).join('')||'<p class="mu">No rewards yet. Add your first one.</p>'}</div>
+  <div class="rule"><h3>Add a reward</h3><label class="lbl">What does the customer get?</label><input id="rt" maxlength="80" placeholder="e.g. 5% off your total bill"><label class="lbl">Stamps needed (card has ${D.me.card_size})</label><input id="rn" type="number" min="1" max="${D.me.card_size}">
+  <label class="lbl">Valid for (days)</label><input id="rd" type="number" value="30" min="1" max="365"><button class="btn" onclick="addReward()">Add reward</button></div></div>`;
+}
+async function addReward(){try{await api('/api/shop/rewards','POST',{title:$('#rt').value,stamps_required:$('#rn').value,expiry_days:$('#rd').value});toast('Reward added');await refresh(true)}catch(e){toast(e.message)}}
+function editReward(id){const r=D.rewards.find(x=>x.id===id);sheet(`<h2 style="margin-bottom:16px">Edit reward</h2><label class="lbl">Reward</label><input id="et" value="${esc(r.title)}" maxlength="80"><label class="lbl">Stamps needed</label><input id="en" type="number" value="${r.stamps_required}" min="1" max="${D.me.card_size}"><label class="lbl">Valid for (days)</label><input id="ed" type="number" value="${r.expiry_days}">
+  <p class="sm mu" style="margin-bottom:14px">Rewards customers already earned keep their original text.</p><button class="btn full" onclick="saveReward(${id})">Save</button>`,1)}
+async function saveReward(id){try{await api('/api/shop/rewards/'+id,'PATCH',{title:$('#et').value,stamps_required:$('#en').value,expiry_days:$('#ed').value});closeSheet();toast('Saved');await refresh(true)}catch(e){toast(e.message)}}
+async function delReward(id){if(confirm('Remove this reward? Rewards already earned stay valid.')){await api('/api/shop/rewards/'+id,'DELETE');await refresh(true)}}
+
+/* ---------- winners (earned rewards to redeem) ---------- */
+let wq='';
+function winners(){
+  const rows=D.claims.filter(c=>!wq||(c.name+c.phone+c.code+c.title).toLowerCase().includes(wq));
+  return `<div class="rule"><h3>Rewards to redeem</h3><input id="wq" placeholder="Search by name, phone or redeem code" value="${esc(wq)}" oninput="wq=this.value.toLowerCase();$('#wl').innerHTML=wrows()"><div id="wl">${wrows()}</div></div>`;
+}
+function wrows(){
+  const rows=D.claims.filter(c=>!wq||(c.name+c.phone+c.code+c.title).toLowerCase().includes(wq));
+  return rows.length?`<div style="overflow:auto"><table><tr><th>Code</th><th>Reward</th><th>Customer</th><th>Status</th><th></th></tr>${rows.map(c=>{const live=c.status==='earned'&&!c.expired;return `<tr><td class="mono" style="font-size:20px">${esc(c.code||'-')}</td><td>${esc(c.title)}</td><td>${esc(c.name)}<div class="sm mu">${fmtPhone(c.phone)}</div></td>
+    <td>${live?`<span class="tag red">Expires ${fmtDate(c.expires_at)}</span>`:c.status==='redeemed'?`<span class="tag">Redeemed ${fmtTime(c.redeemed_at)}</span>`:'<span class="tag">Expired</span>'}</td><td>${live?`<button class="btn sm" onclick="redeem(${c.id})">Mark redeemed</button>`:''}</td></tr>`}).join('')}</table></div>`:'<div class="empty"><b>Nothing here yet</b>Earned rewards show up here.</div>';
+}
+async function redeem(id){try{await api(`/api/shop/claims/${id}/redeem`,'POST');toast('Marked as redeemed')}catch(e){toast(e.message)}await refresh(true)}
+
+/* ---------- settings + QR ---------- */
+function settings(){
+  const m=D.me;
+  return `<div class="g2"><div class="rule" style="text-align:center"><h3 style="text-align:left">Your QR code</h3><img src="/api/shop/qr.svg" alt="QR" style="width:260px;max-width:100%;margin-top:6px"><div class="lbl" style="margin-top:6px">Shop code</div><div class="mono" style="font-size:40px;letter-spacing:.14em">${esc(m.code)}</div>
+    <p class="sm mu" style="word-break:break-all;margin:8px 0 14px">${esc(m.scan_url)}</p><div style="display:flex;gap:8px;justify-content:center;flex-wrap:wrap"><button class="btn line sm" onclick="navigator.clipboard.writeText('${esc(m.scan_url)}').then(()=>toast('Link copied'))">${ic('copy',20)}Copy link</button><a class="btn line sm" href="/api/shop/qr.svg" download="${esc(m.slug)}-qr.svg">${ic('download',20)}Download</a><button class="btn sm" onclick="printQR()">${ic('printer',20)}Print poster</button></div>
+    <p class="sm mu" style="margin-top:14px">Display at your counter. Customers scan it after paying, or type the shop code in their app.</p></div>
+  <div class="rule"><h3>Shop settings</h3><label class="lbl">Shop name</label><input id="sn" value="${esc(m.name)}"><label class="lbl">Phone</label><input id="sp" value="${esc(m.phone||'')}"><label class="lbl">Address (shown to customers)</label><input id="sa" value="${esc(m.address||'')}">
+  <label class="lbl">Opening hours (shown to customers)</label><input id="sh" placeholder="10 AM - 10 PM" value="${esc(m.hours||'')}"><label class="lbl" for="sz">Stamps per card (2 to 30)</label><input id="sz" type="number" min="2" max="30" value="${m.card_size}"><span class="lbl">Stamp design (what customers see on their card)</span><div class="glyphpick" id="gp" role="group" aria-label="Stamp design">${STAMP_NAMES.map((g,i)=>`<button type="button" aria-pressed="${g===(m.stamp_icon||'star')}" aria-label="${g}" data-g="${g}" onclick="pickG(this)">${stampImg(g,i)}</button>`).join('')}</div>
+  <label class="chk"><input type="checkbox" id="aa" ${m.auto_approve?'checked':''}>Auto-approve stamps (no staff tap needed)</label>
+  <label class="chk" style="margin-bottom:18px"><input type="checkbox" id="mm" ${m.multi_per_day?'checked':''}>Allow more than one stamp per customer per day</label>
+  <button class="btn" onclick="save()">Save settings</button> <button class="btn line" onclick="Notification.requestPermission().then(p=>toast(p==='granted'?'Desktop alerts on':'Alerts blocked in browser settings'))">${ic('bell',20)}Enable desktop alerts</button></div></div>`;
+}
+function pickG(b){document.querySelectorAll('#gp button').forEach(x=>x.setAttribute('aria-pressed',x===b))}
+async function save(){try{await api('/api/shop/settings','PATCH',{name:$('#sn').value,phone:$('#sp').value,address:$('#sa').value,hours:$('#sh').value,card_size:+$('#sz').value,stamp_icon:($('#gp [aria-pressed=true]')||{dataset:{}}).dataset.g,auto_approve:$('#aa').checked,multi_per_day:$('#mm').checked});toast('Saved');await refresh(true)}catch(e){toast(e.message)}}
+function printQR(){const m=D.me,w=open('');w.document.write(`<body style="text-align:center;font-family:Arial,sans-serif;padding:40px"><h1 style="font-size:54px">${esc(m.name)}</h1><h2>Scan to collect stamps</h2><img src="/api/shop/qr.svg" width="420"><p style="font-size:26px;letter-spacing:.15em">Or enter code <b>${esc(m.code)}</b></p><script>setTimeout(()=>print(),500)<\/script>`);w.document.close()}
+async function signOut(){await api('/api/shop/logout','POST');authView()}
+
+/* ---------- boot + live updates ---------- */
+async function boot(){
+  try{await load()}catch{return authView()}
+  paint();
+  if(window.EventSource&&!window.__es){window.__es=new EventSource('/api/shop/events');window.__es.onmessage=()=>refresh()}
+  setInterval(()=>{if(!document.hidden&&D)refresh()},30000); // safety net if the live connection is blocked
+}
+boot();
+</script></body></html>
