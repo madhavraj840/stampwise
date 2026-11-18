@@ -241,14 +241,15 @@ app.post('/api/shop/customers/import',S,limit('import',30,36e5,req=>req.uid),h(a
   const sh=await one('select card_size from shops where id=$1',[req.uid]),seen=new Set(),ok=[],bad=[];
   rows.forEach((r,i)=>{const p=normPhone(r.phone),n=String(r.name||'').trim().replace(/\s+/g,' ').slice(0,60)||'Customer',st=Math.min(Math.max(parseInt(r.stamps)||0,0),sh.card_size-1);
     if(!p)bad.push({row:r.row||i+1,reason:'Invalid mobile number'});else if(seen.has(p))bad.push({row:r.row||i+1,reason:'Duplicate number in the list'});else{seen.add(p);ok.push([p,n,st])}});
-  if(!ok.length)return res.json({total:rows.length,new_customers:0,cards_added:0,already:0,invalid:bad});
+  if(!ok.length)return res.json({total:rows.length,cards_added:0,already:0,invalid:bad});
   const r=await one(`with input as(select * from unnest($1::text[],$2::text[],$3::int[]) as t(phone,name,stamps)),
     ins as(insert into customers(phone,name) select phone,name from input on conflict(phone) do nothing returning id,phone),
     allc as(select id,phone from ins union select c.id,c.phone from customers c join input i on i.phone=c.phone),
     cd as(insert into cards(customer_id,shop_id,stamps,visits) select a.id,$4,i.stamps,i.stamps from allc a join input i on i.phone=a.phone on conflict do nothing returning customer_id)
     select (select count(*) from ins)::int new_customers,(select count(*) from cd)::int cards_added`,[ok.map(x=>x[0]),ok.map(x=>x[1]),ok.map(x=>x[2]),req.uid]);
   push('shop:'+req.uid,{t:'update'});
-  res.json({total:rows.length,new_customers:r.new_customers,cards_added:r.cards_added,already:ok.length-r.cards_added,invalid:bad});
+  // new_customers is NOT returned: it would tell any shop whether a phone number already uses the app
+  res.json({total:rows.length,cards_added:r.cards_added,already:ok.length-r.cards_added,invalid:bad});
 }));
 app.delete('/api/shop/customers/:id(\\d{1,9})',S,h(async(req,res)=>{
   const a=[+req.params.id,req.uid];
