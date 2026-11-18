@@ -82,11 +82,12 @@ function go(t){tab=t;paint();scrollTo(0,0)}
 
 /* ---------- live updates without keeping a connection open ----------
    1) web push (if allowed): the server pings this device when a request arrives, the page then syncs
-   2) fallback: a small sync every 60 s, only while this tab is visible and someone used it in the last 10 minutes */
+   2) fallback: a small sync every 5 s without alerts (60 s with alerts, as a safety net), only while this tab is visible and someone used it in the last 30 minutes */
 let liveT,lastAct=Date.now(),idle=false;
 const stopLive=()=>clearTimeout(liveT);
+const pushOn=()=>!!(D?.me.vapid&&window.Notification&&Notification.permission==='granted'&&store.get('pushsent'));
 function live(){stopLive();if(!D||D.me.paused)return;
-  liveT=setTimeout(async()=>{if(!document.hidden){if(Date.now()-lastAct>6e5){idle=true;return paint()}await refresh()}live()},6e4)}
+  liveT=setTimeout(async()=>{if(!document.hidden){if(Date.now()-lastAct>18e5){idle=true;return paint()}await refresh()}live()},pushOn()?6e4:5e3)}
 ['pointerdown','keydown'].forEach(e=>addEventListener(e,()=>{lastAct=Date.now();if(idle){idle=false;refresh();live();paint()}},{passive:true}));
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&D&&!D.me.paused){lastAct=Date.now();idle=false;refresh();live()}});
 navigator.serviceWorker?.addEventListener('message',e=>{if(e.data?.t==='sync')refresh()});
@@ -99,7 +100,7 @@ async function enableAlerts(quiet){
     const sub=await reg.pushManager.getSubscription()||await reg.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:b64u(D.me.vapid)});
     if(store.get('pushsent')!==sub.endpoint){await api('/api/shop/push','POST',sub.toJSON());store.set('pushsent',sub.endpoint)}
   }catch(e){console.warn('push',e)}
-  if(!quiet)toast('Alerts are on for this device');
+  if(!quiet)toast('Alerts are on for this device');live();paint();
 }
 
 /* ---------- shell ---------- */
@@ -112,7 +113,8 @@ function paint(force){
   const n=D.pending.length;document.title=(n?`(${n}) `:'')+BRAND+' · Shop';$('#hname').textContent=m.name;
   $('#hlogo').innerHTML=m.logo_ver?`<img class="logo" alt="" src="/api/logo/${m.id}?v=${m.logo_ver}">`:'';
   $('#banner').innerHTML=m.paused?`<div class="paused"><span>${ic('player-pause',22)} Your loyalty program is paused. Customers cannot collect stamps or redeem rewards.</span><button class="btn sm" onclick="setPaused(false)">${ic('player-play',20)}Resume program</button></div>`
-    :idle?`<div class="paused"><span>${ic('clock',22)} Live updates paused while you were away.</span><button class="btn sm" onclick="lastAct=Date.now();idle=false;refresh(1);live()">${ic('refresh',20)}Resume</button></div>`:'';
+    :idle?`<div class="paused"><span>${ic('clock',22)} Live updates paused while you were away.</span><button class="btn sm" onclick="lastAct=Date.now();idle=false;refresh(1);live()">${ic('refresh',20)}Resume</button></div>`
+    :!pushOn()&&m.vapid&&window.Notification&&Notification.permission!=='denied'?`<div class="paused"><span>${ic('bell',22)} Turn on alerts to hear new stamp requests instantly, even when this tab is in the background.</span><button class="btn sm" onclick="enableAlerts()">${ic('bell',20)}Turn on alerts</button></div>`:'';
   $('#tabs').innerHTML=TABS.map(([k,l,i])=>`<button class="${k===tab?'on':''}" onclick="go('${k}')">${ic(i,20)}${l}${k==='approvals'&&n?`<span class="badge">${n}</span>`:''}</button>`).join('');
   const f=n&&tab!=='approvals'?D.pending[0]:null;
   $('#float').innerHTML=f?`<div class="float"><span class="lbl">New stamp request${n>1?' · '+(n-1)+' more waiting':''}</span><div class="row" style="margin:8px 0 12px"><div><b>${esc(f.name)}</b><div class="sm" style="color:#B8C5D0">${fmtPhone(f.phone)} · ${f.stamps}/${m.card_size} stamps</div></div></div>

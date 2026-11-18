@@ -133,14 +133,14 @@ function afterApproved(shopId){
       <a class="btn red full" target="_blank" rel="noopener" href="${esc(c.review_url)}" onclick="closeSheet()">${ic('star',22)}Review on Google</a><button class="btn line full" style="margin-top:10px" onclick="closeSheet()">Not now</button>`,1)},600);
 }
 
-/* ---------- waiting for approval: ask about that one request every 5 s, only while the screen is open, for at most 2 minutes ---------- */
+/* ---------- waiting for approval: ask about that one request every 3 s, only while the screen is open, for at most 10 minutes ---------- */
 let pollT,polls=0;
 function watchPending(reset){
-  clearTimeout(pollT);if(reset)polls=0;const p=data?.cards.filter(c=>c.pending)||[];if(!p.length||polls>=24||document.hidden)return;
+  clearTimeout(pollT);if(reset)polls=0;const p=data?.cards.filter(c=>c.pending)||[];if(!p.length||polls>=200||document.hidden)return;
   pollT=setTimeout(async()=>{polls++;try{
     const st=await Promise.all(p.map(c=>api(`/api/cards/${c.shop_id}/status`).then(r=>r.status)));
     if(st.some(s=>s!=='pending')){await load();if(!$('#sheet'))route();p.forEach((c,i)=>{if(st[i]==='approved'){toast(`Stamp added at ${c.name}`);afterApproved(c.shop_id)}})}else watchPending()
-  }catch{watchPending()}},5e3);
+  }catch{watchPending()}},3e3);
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&me)watchPending(1)});
 
