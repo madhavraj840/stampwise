@@ -1,5 +1,5 @@
 <!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
-<title>Stampwise</title><meta name="theme-color" content="#E4E9EC"><link rel="stylesheet" href="/app.css"></head>
+<title>Stampwise</title><meta name="theme-color" content="#E4E9EC"><link rel="stylesheet" href="/app.css"><link rel="preconnect" href="https://fonts.gstatic.com" crossorigin><link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Figtree:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'"></head>
 <body><div id="app"></div><nav class="nav hide" id="nav"></nav>
 <script src="/brand.js"></script><script src="/icons.js"></script><script src="/common.js"></script>
 <script>
@@ -9,7 +9,7 @@ const greet=()=>{const h=new Date().getHours();return h<12?'Good morning':h<17?'
 const TABS=[['home','Home','home'],['rewards','Rewards','gift'],['profile','Profile','user']];
 const MSG={pending:'Stamp requested. Waiting for the shop to approve.',already_today:'You already collected a stamp here today. Come back tomorrow.',approved:'Stamp added.',
   paused:'This shop has paused its loyalty program for now. Try again later.',cooldown:'The shop declined your last request. You can ask again in a few minutes.',
-  hour_limit:'You have already asked twice this hour. Please try again later.',day_limit:'You have reached today\'s limit of stamp requests. Try again tomorrow.'};
+  full:'Your card is full. Redeem your reward to start a new card.',hour_limit:'You have already asked twice this hour. Please try again later.',day_limit:'You have reached today\'s limit of stamp requests. Try again tomorrow.'};
 const logoUrl=c=>c.logo_ver?`/api/logo/${c.shop_id||c.id}?v=${c.logo_ver}`:'';
 /* top bar: wordmark on top-level screens, a labelled Back button on inner screens */
 const mast=(t,side)=>`<header class="bar-top"><span class="word">${BRAND}</span><span class="t"></span><span class="side">${side||''}</span></header>`;
@@ -46,7 +46,8 @@ const pcard=c=>`<article class="pcard"><div class="pcard-head"><span class="k">L
   <div class="pcard-foot"><span>${esc(me.name)}</span><span>${Math.min(c.stamps,c.card_size)} / ${c.card_size}</span></div></article>`;
 const miniDots=c=>`<div class="dots">${Array.from({length:c.card_size},(_,i)=>{const n=i+1,on=n<=c.stamps,wait=!on&&n===c.stamps+1&&c.pending,gift=c.rewards.some(r=>r.stamps_required===n);return `<i class="${on?'on':''} ${gift&&!on?'gift':''} ${wait?'wait':''}"></i>`}).join('')}</div>`;
 const nextReward=c=>c.rewards.find(r=>r.stamps_required>c.stamps)||c.rewards[0];
-const stampBtn=c=>c.paused?`<button class="btn big line full" disabled>${ic('player-pause',22)}Program paused</button>`:`<button class="btn big ${c.pending?'line':'red'} full" ${c.pending?'disabled':''} onclick="reqStamp(${c.shop_id},this)">${c.pending?ic('hourglass',22)+'Waiting for approval':ic('check',22)+'Request stamp'}</button>`;
+const full=c=>c.stamps>=c.card_size&&c.claims.length>0;
+const stampBtn=c=>full(c)?`<button class="btn big red full" onclick="redeemSheet(${c.shop_id})">${ic('gift',22)}Redeem reward</button>`:c.paused?`<button class="btn big line full" disabled>${ic('player-pause',22)}Program paused</button>`:`<button class="btn big ${c.pending?'line':'red'} full" ${c.pending?'disabled':''} onclick="reqStamp(${c.shop_id},this)">${c.pending?ic('hourglass',22)+'Waiting for approval':ic('check',22)+'Request stamp'}</button>`;
 
 /* ---------- screens ---------- */
 function home(){
@@ -57,7 +58,7 @@ function home(){
   ${data.claims.length?`<a class="note ok" href="#rewards" style="text-decoration:none;align-items:center">${ic('gift',24)}<div style="flex:1"><b>${data.claims.length} reward${data.claims.length>1?'s':''} ready to use</b><div class="sm" style="font-weight:500">${exp?`${exp} expiring soon. `:''}Show the code to the staff</div></div>${ic('chevron-right',22)}</a>`:''}
   <div class="row" style="margin:26px 2px 0"><h2>Your cards</h2><button class="btn sm" onclick="addShop()">${ic('plus',20)}Add shop</button></div>
   ${data.cards.length?data.cards.map(c=>{const r=nextReward(c),ex=c.claims.some(soon);return `<a class="blk" href="#card/${c.shop_id}" aria-label="Open ${esc(c.name)} card" style="text-decoration:none;color:inherit"><article class="pcard mini" style="border:0;box-shadow:none;border-radius:0"><div class="pcard-head"><div class="minihead"><div class="logohead">${c.logo_ver?`<img class="logo" alt="" loading="lazy" src="${logoUrl(c)}">`:''}<h2>${esc(c.name)}</h2></div><span class="n" style="color:#fff">${c.stamps}/${c.card_size}</span></div></div>
-    <div class="pcard-body">${miniDots(c)}<div class="row" style="margin-top:12px"><span class="sm mu">${r?esc(r.title)+' at '+r.stamps_required+' stamps':'Collect stamps'}</span>${c.paused?'<span class="tag">Paused</span>':c.pending?'<span class="tag amb">Waiting</span>':ex?'<span class="tag warn">Reward expiring soon</span>':ic('chevron-right',20)}</div></div></article></a>`}).join(''):
+    <div class="pcard-body">${miniDots(c)}<div class="row" style="margin-top:12px"><span class="sm mu">${r?esc(r.title)+' at '+r.stamps_required+' stamps':'Collect stamps'}</span>${c.paused?'<span class="tag">Paused</span>':full(c)?'<span class="tag red">Redeem reward</span>':c.pending?'<span class="tag amb">Waiting</span>':ex?'<span class="tag warn">Reward expiring soon</span>':ic('chevron-right',20)}</div></div></article></a>`}).join(''):
   `<div class="empty">${ic('ticket',40)}<b>No cards yet</b>Scan a shop's QR code after your purchase, or add a shop with its code.<br><br><button class="btn" onclick="addShop()">Add your first shop</button></div>`}</main>`;
 }
 function shopLinks(c){
@@ -70,7 +71,7 @@ function cardView(id){
   const c=data.cards.find(x=>x.shop_id==id);if(!c)return `${backBar('Cards')}<div class="empty"><b>Card not found</b><a class="btn" href="#home">Back to cards</a></div>`;
   const r=nextReward(c),pct=r?Math.min(100,Math.round(c.stamps/r.stamps_required*100)):0;
   return `${backBar('Cards',c.name)}<main class="wrap"><div class="split">
-  <div class="col">${pcard(c)}<div style="margin-top:14px">${stampBtn(c)}</div>${c.paused?`<div class="note">${ic('player-pause',22)}<div>${esc(c.name)} has paused its loyalty program. Your stamps and rewards are safe.</div></div>`:c.pending?`<div class="note">${ic('hourglass',22)}<div>Your request is with the shop. This card updates by itself once it is approved.</div></div>`:''}</div>
+  <div class="col">${pcard(c)}<div style="margin-top:14px">${stampBtn(c)}</div>${full(c)?`<div class="note ok">${ic('gift',22)}<div>Your card is full. Show your reward to the staff. A new card starts once they redeem it.</div></div>`:c.paused?`<div class="note">${ic('player-pause',22)}<div>${esc(c.name)} has paused its loyalty program. Your stamps and rewards are safe.</div></div>`:c.pending?`<div class="note">${ic('hourglass',22)}<div>Your request is with the shop. This card updates by itself once it is approved.</div></div>`:''}</div>
   <div class="col"><section class="sect">
     ${r?`<div class="reward-hero"><span class="big">${ic('gift',30)}</span><div><span class="lbl">${c.stamps>=r.stamps_required?'Unlocked':'Next reward'}</span><h3>${esc(r.title)}</h3></div></div>
     <div class="meter" role="progressbar" aria-valuemin="0" aria-valuemax="${r.stamps_required}" aria-valuenow="${Math.min(c.stamps,r.stamps_required)}"><i style="width:${pct}%"></i></div>
@@ -92,8 +93,11 @@ function rewardSheet(shopId,rid){
     ${claims.map(l=>`${claimQR(l)}<p class="sm" style="text-align:center;margin-top:8px">${soon(l)?'<b class="red">Expires soon:</b> ':''}Show the code or let the staff scan it. Expires in ${daysLeft(l.expires_at)} day${daysLeft(l.expires_at)===1?'':'s'}.</p>`).join('')}
     <button class="btn line full" style="margin-top:18px" onclick="closeSheet()">Close</button>`);fillQR();
 }
-async function rewardsView(){
-  rw=await api('/api/rewards');
+function redeemSheet(shopId){const c=data.cards.find(x=>x.shop_id==shopId);
+  sheet(`<span class="lbl">${esc(c.name)}</span><h2 style="margin:4px 0 6px">Your card is full</h2><p class="mu sm">Show this to the staff. Your new card starts as soon as they redeem it.</p>
+    ${c.claims.slice().reverse().map(l=>`<h3 style="margin-top:16px">${esc(l.title)}</h3>${claimQR(l)}<p class="sm mu" style="text-align:center">Expires in ${daysLeft(l.expires_at)} day${daysLeft(l.expires_at)===1?'':'s'}.</p>`).join('')}
+    <button class="btn line full" style="margin-top:18px" onclick="closeSheet()">Close</button>`);fillQR()}
+function rewardsView(){
   const claim=rw.filter(r=>r.status==='earned'&&!r.expired),hist=rw.filter(r=>!(r.status==='earned'&&!r.expired)),list=rtab==='claim'?claim:hist;
   return `${mast()}<main class="wrap"><div class="page-h"><h1>Rewards</h1><p>Rewards you have earned at your shops.</p></div>
   <div class="seg"><button class="${rtab==='claim'?'on':''}" onclick="rtab='claim';route()">To claim (${claim.length})</button><button class="${rtab==='hist'?'on':''}" onclick="rtab='hist';route()">History (${hist.length})</button></div>
@@ -109,7 +113,8 @@ function profile(){return `${mast()}<main class="wrap"><div class="page-h"><span
   <p style="text-align:center;margin-top:18px"><a href="/privacy" target="_blank" class="sm mu" style="display:inline-block;padding:10px;text-decoration:underline">Terms &amp; Privacy Policy</a> <button class="sm" style="background:none;border:0;color:var(--danger);padding:10px;text-decoration:underline;cursor:pointer" onclick="deleteMe()">Delete my account</button></p></div></main>`}
 
 /* ---------- actions ---------- */
-async function reqStamp(id,b){b.disabled=true;try{const r=await api(`/api/cards/${id}/request`,'POST');toast(MSG[r.status]);if(r.status==='approved')afterApproved(id);await load();route()}catch(e){toast(e.message);b.disabled=false}}
+async function reqStamp(id,b){b.disabled=true;try{const r=await api(`/api/cards/${id}/request`,'POST');toast(MSG[r.status]);
+  if(r.status==='pending'){data.cards.find(c=>c.shop_id==id).pending=true;store.set('home',data);watchPending(1)}else if(r.status==='approved'){await load();afterApproved(id)}else await load();route()}catch(e){toast(e.message);b.disabled=false}}
 function addShop(){sheet(`<span class="lbl">Add a shop</span><h2 style="margin:4px 0 16px">Join with a code or QR</h2>
   <label class="lbl" for="sc">Shop code (printed under the QR)</label><input id="sc" maxlength="40" placeholder="e.g. K7M2QX" autocapitalize="characters" style="text-transform:uppercase;letter-spacing:.15em;font:600 20px var(--mono)">
   <button class="btn full" onclick="joinShop($('#sc').value)">Join and request stamp</button>
@@ -121,10 +126,10 @@ async function joinShop(key){key=(key||'').trim();if(!key)return toast('Enter th
   try{const r=await api('/api/scan/'+encodeURIComponent(key),'POST');closeSheet();note=r;if(r.status==='approved')afterApproved(r.shop_id);await load();location.hash='#home';route()}catch(e){toast(e.message)}}
 function scanQR(){closeSheet();scanCamera(joinShop,()=>{toast('Could not open the camera. Type the shop code instead.');addShop()})}
 async function saveName(){try{me=(await api('/api/me','PATCH',{name:$('#pn').value})).customer;data.me=me;store.set('home',data);toast('Name updated');route()}catch(e){toast(e.message)}}
-async function signOut(){await api('/api/auth/logout','POST').catch(()=>{});store.del('home');me=null;data=null;location.hash='';loginView()}
+async function signOut(){await api('/api/auth/logout','POST').catch(()=>{});store.del('home');store.del('rw');rw=null;me=null;data=null;location.hash='';loginView()}
 async function deleteMe(){
   if(!await ask('Delete your account?','Your name, number, cards and stamps are erased. Shops keep only an anonymous record of rewards they gave. This cannot be undone.','Delete my account',1))return;
-  try{await api('/api/me','DELETE');store.del('home');store.del('phone');store.del('name');me=null;data=null;location.hash='';toast('Your account was deleted');loginView()}catch(e){toast(e.message)}
+  try{await api('/api/me','DELETE');store.del('home');store.del('rw');rw=null;store.del('phone');store.del('name');me=null;data=null;location.hash='';toast('Your account was deleted');loginView()}catch(e){toast(e.message)}
 }
 /* after an approved stamp: invite a Google review (shown to everyone, at most once a week per shop, never tied to stamps) */
 function afterApproved(shopId){
@@ -133,13 +138,14 @@ function afterApproved(shopId){
       <a class="btn red full" target="_blank" rel="noopener" href="${esc(c.review_url)}" onclick="closeSheet()">${ic('star',22)}Review on Google</a><button class="btn line full" style="margin-top:10px" onclick="closeSheet()">Not now</button>`,1)},600);
 }
 
-/* ---------- waiting for approval: ask about that one request every 3 s, only while the screen is open, for at most 10 minutes ---------- */
+/* ---------- polling, only while the screen is open, every 3 s for at most 10 minutes: a waiting request, and the open full card (until the shop redeems it) ---------- */
 let pollT,polls=0;
 function watchPending(reset){
-  clearTimeout(pollT);if(reset)polls=0;const p=data?.cards.filter(c=>c.pending)||[];if(!p.length||polls>=200||document.hidden)return;
+  clearTimeout(pollT);if(reset)polls=0;const open=location.hash.split('/')[1],p=data?.cards.filter(c=>c.pending||full(c)&&c.shop_id==open)||[];if(!p.length||polls>=200||document.hidden)return;
   pollT=setTimeout(async()=>{polls++;try{
-    const st=await Promise.all(p.map(c=>api(`/api/cards/${c.shop_id}/status`).then(r=>r.status)));
-    if(st.some(s=>s!=='pending')){await load();if(!$('#sheet'))route();p.forEach((c,i)=>{if(st[i]==='approved'){toast(`Stamp added at ${c.name}`);afterApproved(c.shop_id)}})}else watchPending()
+    const st=await Promise.all(p.map(c=>api(`/api/cards/${c.shop_id}/status`))),done=p.filter((c,i)=>c.pending?st[i].status!=='pending':st[i].stamps<c.card_size);
+    if(!done.length)return watchPending();
+    await load();done.forEach(c=>{const x=st[p.indexOf(c)];if(!c.pending){closeSheet();toast(`Reward redeemed. Your new card at ${c.name} has started`)}else if(x.status==='approved'){toast(`Stamp added at ${c.name}`);afterApproved(c.shop_id)}});if(!$('#sheet'))route()
   }catch{watchPending()}},3e3);
 }
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&me)watchPending(1)});
@@ -148,20 +154,21 @@ document.addEventListener('visibilitychange',()=>{if(!document.hidden&&me)watchP
 async function route(){
   if(!me)return;if(!$('#sheet .qrbox'))closeSheet();
   const[t,arg]=(location.hash.slice(1)||'home').split('/'),tab=t==='card'?'home':t;
-  try{
-    if(t==='rewards'){app.innerHTML=await rewardsView();fillQR()}
-    else{if(!data)await load();app.innerHTML=t==='card'?cardView(arg):t==='profile'?profile():home()}
-  }catch(e){if(e.status===401){me=null;return loginView()}app.innerHTML=`<div class="empty">${ic('alert-circle',40)}<b>Could not load</b>${esc(e.message)}<br><br><button class="btn" onclick="route()">Try again</button></div>`}
   const n=$('#nav');n.classList.remove('hide');n.innerHTML=TABS.map(([k,l,i])=>`<a href="#${k}" class="${k===tab?'on':''}" ${k===tab?'aria-current="page"':''}>${ic(i,24)}${l}</a>`).join('');
+  try{
+    if(t==='rewards'){rw=rw||store.get('rw');if(rw){app.innerHTML=rewardsView();fillQR()}rw=await api('/api/rewards');store.set('rw',rw);if(location.hash.startsWith('#rewards')){app.innerHTML=rewardsView();fillQR()}}
+    else{if(!data)await load();app.innerHTML=t==='card'?cardView(arg):t==='profile'?profile():home()}
+  }catch(e){if(e.status===401){me=null;return loginView()}if(t!=='rewards'||!rw)app.innerHTML=`<div class="empty">${ic('alert-circle',40)}<b>Could not load</b>${esc(e.message)}<br><br><button class="btn" onclick="route()">Try again</button></div>`}
 }
-addEventListener('hashchange',()=>{route();scrollTo(0,0)});
+addEventListener('hashchange',()=>{route();scrollTo(0,0);watchPending(1)});
 async function boot(){
   const cached=store.get('home');
-  if(cached&&!slug){data=cached;me=data.me;route()} // instant first paint from the phone's copy
+  if(cached){data=cached;me=data.me;route()} // instant first paint from the phone's copy
+  if(slug){ // the server knows if a request is already waiting, so scan straight away
+    const r=await api('/api/scan/'+encodeURIComponent(slug),'POST').catch(e=>e.status===401?null:{error:e.message});
+    if(!r){store.del('home');me=null;return loginView()}
+    note=r;history.replaceState(null,'','/#home');if(r.status==='approved')afterApproved(r.shop_id)}
   try{await load()}catch(e){if(e.status===401||!cached){store.del('home');me=null;return loginView()}return}
-  if(slug){const p=pendingFor(slug);
-    note=p?{status:'pending',shop_id:p.shop_id}:await api('/api/scan/'+encodeURIComponent(slug),'POST').catch(e=>({error:e.message}));
-    history.replaceState(null,'','/#home');if(note.status==='approved')afterApproved(note.shop_id);if(!p)await load()}
   route();watchPending(1);
 }
 boot();

@@ -114,7 +114,8 @@ textarea{min-height:120px}
 .slot.gift{border:2px dashed var(--brand);color:var(--brand);background:rgba(216,236,229,.55)}
 .slot.gift small{position:absolute;bottom:-1px;font:600 10px var(--mono);line-height:1}
 .slot.wait{border:2px dashed #B7791A;color:#8A5300;background:rgba(251,235,198,.6)}
-.slot .stampimg{position:absolute;inset:-9%;color:var(--stamp);mix-blend-mode:multiply;transform:rotate(var(--r,0deg)) translate(var(--dx,0),var(--dy,0));opacity:var(--o,.92);filter:url(#ink);pointer-events:none}
+/* patchy ink: one small noise image, drawn once and shared by every stamp (a live SVG filter on each stamp was slow on phones) */
+.slot .stampimg{position:absolute;inset:-9%;color:var(--stamp);mix-blend-mode:multiply;transform:rotate(var(--r,0deg)) translate(var(--dx,0),var(--dy,0));opacity:var(--o,.92);-webkit-mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.11 .13' numOctaves='2' seed='9'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2.6 -.15'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E") 0 0/100% 100%;mask:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.11 .13' numOctaves='2' seed='9'/%3E%3CfeColorMatrix values='0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 0 2.6 -.15'/%3E%3C/filter%3E%3Crect width='120' height='120' filter='url(%23n)'/%3E%3C/svg%3E") 0 0/100% 100%;pointer-events:none}
 .stampimg svg{display:block;width:100%;height:100%}
 .pcard-foot{display:flex;justify-content:space-between;gap:10px;padding:10px 16px 14px;border-top:1px dashed #AEBAC3;margin:0 16px;padding-left:0;padding-right:0;font:500 12px var(--mono);color:#51606C}
 .pcard.mini .pcard-head{padding:12px 16px}.pcard.mini .pcard-head::after{display:none}.pcard.mini h2{font-size:18px}

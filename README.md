@@ -27,7 +27,7 @@ Vercel Hobby is for non-commercial use. Move to Pro (or any Node host) before ch
 - **Sessions are signed cookies** (no session table lookups). Accounts are re-checked once an hour, so "log out all devices", suspend and block apply within an hour.
 - **Shop dashboard keeps its own copy** of customers and rewards (in the browser) and downloads only rows changed since the last sync. Search, filters, sort, CSV and top customers run in the browser. Charts read a one-row-per-day table (`shop_days`).
 - **New-request alerts:** web push when VAPID keys are set, otherwise a small sync every 60 s, only while the tab is visible and someone used it in the last 10 minutes. A paused shop stops syncing.
-- **Customers** see their last home screen instantly from the phone, and only poll (every 5 s, max 2 minutes, only while the screen is open) while a stamp request is waiting.
+- **Customers** see their last home screen instantly from the phone, and only poll (every 3 s, max 10 minutes, only while the screen is open) while a stamp request is waiting, or while they hold up a full card for the shop to redeem.
 - QR codes are drawn and read in the browser; logos are shrunk to 256 px in the browser; public shop info and logos are CDN-cached.
 - A daily cron (`/api/cron/daily`) cleans rate limits, expires old reset requests and deletes declined requests older than 180 days.
 
@@ -59,6 +59,7 @@ After two wrong passwords the shop login offers **Reset via WhatsApp**: the shop
 
 ## Card size
 The card has as many stamps as the shop's biggest active reward (1 to 30). Adding, editing or removing a reward resizes it. A new shop with no rewards shows 8.
+A full card stays full and the customer's button becomes **Redeem reward**; the new card starts when the shop redeems that reward. If the card is full but no reward is left to redeem (it expired, or the shop has none), the next stamp request starts a new card.
 
 ## Staff accounts (structure only)
 `shop_staff` (approve-only role) and `stamp_requests.decided_by` exist; no screens yet.

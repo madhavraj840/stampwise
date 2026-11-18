@@ -115,7 +115,7 @@ app.get('/api/logo/:id(\\d{1,9})',h(async(req,res)=>{
 
 async function decide(id,shopId,ok){
   // ONE statement: decide the request, add the stamp, give every reward reached or passed this cycle (once each),
-  // complete the card at card_size, update the card counters and today's stats
+  // stop at card_size (a full card stays full until its reward is redeemed), update the card counters and today's stats
   const r=await one(`with r as(update stamp_requests set status=$3,decided_at=now() where id=$1 and shop_id=$2 and status='pending' returning customer_id),
     s as(select card_size from shops where id=$2),
     k as(select k.stamps,k.cycles from cards k,r where k.customer_id=r.customer_id and k.shop_id=$2 and $3='approved'),
@@ -123,7 +123,7 @@ async function decide(id,shopId,ok){
       select w.id,$2,r.customer_id,w.title,lpad(floor(random()*10000)::int::text,4,'0'),now()+w.expiry_days*interval '1 day',k.cycles
       from rewards w,r,k where w.shop_id=$2 and w.active and w.stamps_required<=k.stamps+1
       and not exists(select 1 from claims x where x.customer_id=r.customer_id and x.reward_id=w.id and x.cycle=k.cycles) returning 1),
-    u as(update cards c set stamps=case when k.stamps+1>=s.card_size then 0 else k.stamps+1 end,cycles=c.cycles+(k.stamps+1>=s.card_size)::int,
+    u as(update cards c set stamps=least(k.stamps+1,s.card_size),
       visits=c.visits+1,last_visit=now(),updated_at=now(),earned=c.earned+(select count(*) from cl)
       from r,k,s where c.customer_id=r.customer_id and c.shop_id=$2 returning 1),
     d as(insert into shop_days(shop_id,day,stamps,earned) select $2,${DAY},1,(select count(*) from cl) from u
@@ -140,19 +140,26 @@ async function requestStamp(uid,s){
   // ONE statement: join the shop (creates the card), then the anti-fraud checks, then the request
   const r=await one(`with cu as(select status from customers where id=$1),
     c as(insert into cards(customer_id,shop_id) select $1,$2 from cu where status='active'
-      on conflict(customer_id,shop_id) do update set removed_at=null,updated_at=now() where cards.removed_at is not null returning (xmax=0) ins),
+      on conflict(customer_id,shop_id) do update set removed_at=null,updated_at=now(),
+        -- a full card with no reward left to redeem (expired, or the shop has none) starts a new card
+        stamps=case when cards.removed_at is null then 0 else cards.stamps end,cycles=cards.cycles+(cards.removed_at is null)::int
+      where cards.removed_at is not null or (cards.stamps>=(select card_size from shops where id=$2)
+        and not exists(select 1 from claims l where l.customer_id=$1 and l.shop_id=$2 and l.cycle=cards.cycles and l.status='earned' and l.expires_at>now()))
+      returning (xmax=0) ins),
     nd as(insert into shop_days(shop_id,day,new_customers) select $2,${DAY},1 from c where ins on conflict(shop_id,day) do update set new_customers=shop_days.new_customers+1),
     chk as(select (select status from cu) cst,
+      -- full card whose reward is still waiting: redeem first
+      (exists(select 1 from cards k,shops s where s.id=$2 and k.customer_id=$1 and k.shop_id=$2 and k.stamps>=s.card_size) and not exists(select 1 from c)) "full",
       exists(select 1 from stamp_requests where customer_id=$1 and shop_id=$2 and status='pending') pending,
       ($3 and exists(select 1 from stamp_requests where customer_id=$1 and shop_id=$2 and status='approved' and decided_at>=${TODAY})) today,
       ($4 and exists(select 1 from stamp_requests where customer_id=$1 and shop_id=$2 and status='declined' and decided_at>now()-make_interval(mins=>${COOLDOWN_MIN}))) cooldown,
       ($4 and (select count(*) from stamp_requests where customer_id=$1 and shop_id=$2 and created_at>now()-interval '1 hour')>=${MAX_PER_HOUR}) hour_limit,
       ($4 and (select count(*) from stamp_requests where customer_id=$1 and created_at>now()-interval '1 day')>=${MAX_PER_DAY}) day_limit),
     ins as(insert into stamp_requests(customer_id,shop_id) select $1,$2 from chk
-      where cst='active' and not(pending or today or cooldown or hour_limit or day_limit) on conflict do nothing returning id)
+      where cst='active' and not(pending or "full" or today or cooldown or hour_limit or day_limit) on conflict do nothing returning id)
     select chk.*,(select id from ins) id from chk`,[uid,s.id,LIMITS&&!s.multi_per_day,LIMITS]);
   if(r.cst!=='active')throw err(403,'Your account is blocked.');
-  if(!r.id)return r.today?'already_today':['cooldown','hour_limit','day_limit'].find(k=>r[k])||'pending';
+  if(!r.id)return r.full?'full':r.today?'already_today':['cooldown','hour_limit','day_limit'].find(k=>r[k])||'pending';
   if(s.auto_approve){await decide(r.id,s.id,true);return 'approved'}
   await notifyShop(s.id,{t:'pending'}).catch(e=>console.error('push:',e.message));return 'pending';
 }
@@ -167,8 +174,8 @@ app.post('/api/cards/:shopId(\\d{1,9})/request',C,stampLimit,h(async(req,res)=>{
 }));
 // polled every few seconds while a request is waiting (and only then): one indexed row
 app.get('/api/cards/:shopId(\\d{1,9})/status',C,h(async(req,res)=>{
-  const r=await one('select status from stamp_requests where customer_id=$1 and shop_id=$2 order by id desc limit 1',[req.uid,+req.params.shopId]);
-  res.json({status:r?.status||null});
+  res.json(await one(`select (select status from stamp_requests where customer_id=$1 and shop_id=$2 order by id desc limit 1) status,
+    (select stamps from cards where customer_id=$1 and shop_id=$2) stamps`,[req.uid,+req.params.shopId]));
 }));
 app.get('/api/home',C,h(async(req,res)=>{
   const [me,cards,rw,claims]=await Promise.all([
@@ -306,8 +313,10 @@ app.delete('/api/shop/rewards/:id(\\d{1,9})',S,h(async(req,res)=>{await q('updat
 app.post('/api/shop/claims/:id(\\d{1,9})/redeem',S,h(async(req,res)=>{
   const code=req.body&&typeof req.body.code==='string'?req.body.code:null;
   const r=await one(`with l as(update claims set status='redeemed',redeemed_at=now(),updated_at=now() where id=$1 and shop_id=$2 and status='earned' and expires_at>now()
-      and ($3::text is null or code=$3) and exists(select 1 from shops where id=$2 and not paused) returning customer_id),
-    k as(update cards set redeemed=redeemed+1,updated_at=now() from l where cards.customer_id=l.customer_id and cards.shop_id=$2),
+      and ($3::text is null or code=$3) and exists(select 1 from shops where id=$2 and not paused) returning customer_id,cycle),
+    z as(select card_size from shops where id=$2),
+    k as(update cards set redeemed=redeemed+1,updated_at=now(),stamps=case when l.cycle=cards.cycles and cards.stamps>=z.card_size then 0 else cards.stamps end,
+      cycles=cards.cycles+(l.cycle=cards.cycles and cards.stamps>=z.card_size)::int from l,z where cards.customer_id=l.customer_id and cards.shop_id=$2),
     d as(insert into shop_days(shop_id,day,redeemed) select $2,${DAY},1 from l on conflict(shop_id,day) do update set redeemed=shop_days.redeemed+1)
     select customer_id from l`,[+req.params.id,req.uid,code]);
   if(!r)throw err(404,'Reward not available (already redeemed, expired, or the program is paused)');res.json({ok:true});
