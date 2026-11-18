@@ -1,6 +1,6 @@
 # Admin panel: features and design
 
-Status: **proposal, waiting for approval**. Nothing is built yet. Pick the scope (MVP or MVP + phase 2) and it gets built.
+Status: **built** (see `admin/` and the README). The design below is the original proposal; an activity feed, PII reveal-on-click and an IP allowlist were left for later.
 
 ## 1. Features
 

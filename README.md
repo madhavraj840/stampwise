@@ -1,93 +1,66 @@
-# Stampwise v2 – digital stamp-card loyalty (free, no OTP yet)
+# Stampwise – digital stamp-card loyalty
 
-Node + Express + Neon Postgres, no build step. Customers use `/`, shops use `/shop`.
+Node + Express + Postgres, no build step. Customers use `/`, shops use `/shop`. The admin panel is a separate app in `admin/`.
+Built to run free on **Vercel Hobby + Neon Free** (it also runs on any Node host via `server.js` or the `Dockerfile`).
 
-## Renaming the product
-The name is set in `public/brand.js` (used in headers and tab titles). Also change the two `<title>` tags in `public/customer.html` and `public/shop.html`, and `name` in `package.json`.
+| Site | What | Vercel project root |
+|---|---|---|
+| `loyalty.bunkwise.in` | Customer app + shop dashboard | repo root |
+| `admin.bunkwise.in` | Admin panel (can manage more projects later) | `admin` |
 
-## Upgrading from v1
-1. Replace the old files with these (keep your `.env`).
-2. Run `npm install`, then `npm run migrate`. It is safe to re-run: it adds shop codes, redeem codes and indexes without touching existing data.
-3. `npm start`
+## Deploy (Vercel + Neon)
+1. **Neon:** create a project in a Singapore region (closest free region to India). Settings → Compute: max **0.25 CU**, scale-to-zero **on (5 min)**. Copy the **pooled** connection string (host contains `-pooler`) and the direct one.
+2. **Vercel project 1 (`stampwise`):** import the GitHub repo, root directory = repo root, region = Singapore (`sin1`, Settings → Functions). The build command (`node migrate.js`) and everything else come from `vercel.json`. Env vars:
+   - `DATABASE_URL` = pooled string; `DATABASE_URL_UNPOOLED` = direct string (migrations only)
+   - `BASE_URL=https://loyalty.bunkwise.in`, `NODE_ENV=production`, `TRUST_PROXY=1`, `DB_POOL_MAX=4`
+   - `SESSION_SECRET`, `CRON_SECRET`: each `node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"`
+   - `SUPPORT_WHATSAPP` (digits, with 91)
+   - optional shop push alerts: `npx web-push generate-vapid-keys` → `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, `VAPID_SUBJECT=mailto:you@…`
+3. **Vercel project 2 (`bunkwise-admin`):** import the same repo again, root directory = **`admin`**, region `sin1`. Env vars: `STAMPWISE_DATABASE_URL` (pooled), `STAMPWISE_DATABASE_URL_UNPOOLED` (direct), `ADMIN_SECRET` (32+ random chars, keep it safe: it encrypts 2FA secrets), `NODE_ENV=production`.
+4. **DNS** (where bunkwise.in is managed): `CNAME loyalty → cname.vercel-dns.com` and `CNAME admin → cname.vercel-dns.com`. Add each domain in its Vercel project (Settings → Domains).
+5. **First admin** (from your computer, in `admin/`): `npm install`, create `admin/.env` with `STAMPWISE_DATABASE_URL` and the same `ADMIN_SECRET`, then `node scripts/create-admin.js you@example.com owner`. It prints a password and a 2FA secret: add the secret to Google Authenticator, then log in at admin.bunkwise.in and change the password (My account). Running the script again for the same email resets its password and 2FA (lost phone).
 
-## Run from scratch
-1. `npm install`
-2. Copy `.env.example` to `.env`, paste your Neon string into `DATABASE_URL` (remove `NODE_ENV` and `BASE_URL` for local testing)
-3. `npm run migrate`, then `npm start`, then open `http://localhost:3000/shop`
+Vercel Hobby is for non-commercial use. Move to Pro (or any Node host) before charging shops.
+
+## How it stays inside the free limits
+- **No open connections or timers:** no live streams, no keep-warm pings, so Neon sleeps when nobody is using it.
+- **Sessions are signed cookies** (no session table lookups). Accounts are re-checked once an hour, so "log out all devices", suspend and block apply within an hour.
+- **Shop dashboard keeps its own copy** of customers and rewards (in the browser) and downloads only rows changed since the last sync. Search, filters, sort, CSV and top customers run in the browser. Charts read a one-row-per-day table (`shop_days`).
+- **New-request alerts:** web push when VAPID keys are set, otherwise a small sync every 60 s, only while the tab is visible and someone used it in the last 10 minutes. A paused shop stops syncing.
+- **Customers** see their last home screen instantly from the phone, and only poll (every 5 s, max 2 minutes, only while the screen is open) while a stamp request is waiting.
+- QR codes are drawn and read in the browser; logos are shrunk to 256 px in the browser; public shop info and logos are CDN-cached.
+- A daily cron (`/api/cron/daily`) cleans rate limits, expires old reset requests and deletes declined requests older than 180 days.
+
+## Anti-fraud (cheap, built in)
+One waiting request per customer per shop · one stamp per day (unless the shop allows more) · max 2 requests per hour per shop and 20 per day overall · 10-minute cooldown after a decline · blocked customers and suspended shops refused · auto-approve needs a confirmation, and the admin dashboard flags auto-approve shops with very busy days and customers joining 5+ shops in a day. Rewards are redeemed with a 4-digit code or by scanning the customer's reward QR.
+
+## Admin panel (`admin/`)
+- Roles: **viewer** (read only), **support** (suspend/reactivate shops, block customers, approve resets), **owner** (also plan changes, erasing customers, admin users). An admin can be limited to some projects.
+- Login: password + authenticator code (mandatory, a code works once). 5 wrong tries lock the account for 15 minutes. 12-hour sessions, `SameSite=Strict`, no indexing.
+- Every action needs a reason and is written to an append-only audit log (a database trigger blocks edits and deletes).
+- Screens: dashboard (totals, 30-day charts, top shops, flags), shops (read-only "view as shop"), customers (phones masked in lists, detail views are audited), password resets (one-click approve/reject), system (DB size, tables, migrations), audit log, admin users.
+- **Adding another project:** copy `admin/adapters/stampwise.js`, describe its lists/actions/stats, add one line to `admin/projects.js` and set its `<NAME>_DATABASE_URL` env var. Admin tables live in schema `admin` of the first project's database (or `ADMIN_DATABASE_URL`).
+
+## Run locally
+`npm install`, copy `.env.example` to `.env` (set `DATABASE_URL`, remove `NODE_ENV`/`BASE_URL`), `npm run migrate`, `npm start`, open `http://localhost:3000/shop`. Admin: `cd admin && npm install && node migrate.js && node app.js` (port 4000).
 
 ## Database changes (migrations)
-Schema changes live in `migrations/` as numbered files (`001_init.sql`, `002_...`). `npm run migrate` runs each file once, in order, inside a transaction, and records it in the `schema_migrations` table. To change the schema, **add a new numbered file**; never edit one that has already run. Existing databases are safe: `001_init.sql` is the old `schema.sql` and only adds what is missing.
+Numbered files in `migrations/` run once each, in order, in a transaction (`npm run migrate`, and on every Vercel build). Never edit a file that has run; add a new one. The admin app has its own `admin/migrations/` (tracked in `admin.schema_migrations`).
 
-## Hosting and moving providers
-- Everything host-specific is an environment variable (see `.env.example`). The app is plain Node + standard Postgres SQL, so any Postgres works (Neon, Supabase, RDS, Cloud SQL, self-hosted).
-- **Move the database:** `pg_dump --no-owner --no-acl "$OLD_URL" > dump.sql`, `psql "$NEW_URL" < dump.sql`, change `DATABASE_URL`, run `npm run migrate`. Set `KEEP_DB_WARM=0` if the new database is not Neon.
-- **Move the app:** `Dockerfile` runs on any container host and migrates on start. Set `TRUST_PROXY` to the number of proxies in front of the app, and `BASE_URL` (QR codes use it, so keep the domain when you move and old printed QRs keep working).
+## Moving providers
+Everything host-specific is an env var. Any Postgres works. Move the DB: `pg_dump --no-owner --no-acl "$OLD" > dump.sql; psql "$NEW" < dump.sql`, change the URLs. Move the app: the `Dockerfile` runs anywhere (keep `BASE_URL` so printed QR codes keep working).
 
-## Scaling (when one server is not enough)
-One app instance handles a lot. Before running **two or more instances**, move these three in-memory pieces to a shared store (Redis is the usual choice): rate limits (`limit()`), live updates (`push()`/`events()`), and the 5-minute session cache (`sc`). Neon's pooled URL does not support Postgres `LISTEN/NOTIFY`, so Redis pub/sub is the simpler path for live updates.
+## Shop password resets
+After two wrong passwords the shop login offers **Reset via WhatsApp**: the shop picks a new password (stored hashed, pending) and WhatsApp opens with a request code. Check the message comes from the shop's registered phone, then approve it in **admin → Password resets**. Requests expire after 2 days.
 
 ## Adding OTP later
-`verifyPhone(phone, body)` in `server.js` is the single hook every customer login goes through, and `customers.phone_verified` is already in the schema. Add an endpoint that sends the code (store only a hash, 5-minute expiry, max 5 attempts, rate-limited per phone and per IP), make `verifyPhone` check `body.code`, and set `phone_verified=true` on success.
+`verifyPhone(phone, body)` in `app.js` is the single hook every customer login goes through; `customers.phone_verified` already exists.
 
-## Resetting a shop's password (owner steps)
-Set `SUPPORT_WHATSAPP` in `.env` to the WhatsApp number that should receive requests (country code + number, digits only).
-
-After a shop gets its password wrong twice, the login page offers **Reset password via WhatsApp**. The shop chooses a NEW password, which is stored (hashed) in `password_resets` as a pending request, and WhatsApp opens with a message to you. Nothing changes until you approve it.
-
-1. Check the WhatsApp message really comes from the shop's registered phone (`shop_phone` below). If the shop has no phone on file, verify another way (call them, or ask for something only the owner knows).
-2. In the Neon SQL Editor, list pending requests (the message shows the request code, which matches `ref`):
-```sql
-select id, ref, shop_name, email, shop_phone, requested_at from password_resets where status = 'pending' order by id desc;
-```
-3. Approve one (replace `12` with its id). This copies the stored hashed password to the shop, signs out its old sessions, and marks the request done:
-```sql
-with r as (select shop_id, new_pass_hash from password_resets where id = 12 and status = 'pending'),
-a as (update shops set pass_hash = (select new_pass_hash from r) where id = (select shop_id from r) returning id),
-b as (delete from sessions where role = 'shop' and subject_id = (select shop_id from r)),
-c as (update password_resets set status = 'done', resolved_at = now() where id = 12 and status = 'pending')
-select count(*) as shops_updated from a;
-```
-`shops_updated = 1` means it worked and the shop can log in with the password it chose. To reject a suspicious request instead: `update password_resets set status = 'rejected', resolved_at = now() where id = 12;`
-
-## Latest changes
-- Shop password reset by WhatsApp request (see above), plus links between the customer and shop login pages. Run `npm run migrate` to add the `password_resets` table. Old pending requests are no longer cancelled by a newer one (that let anyone cancel a real request); they expire after 2 days.
-- The customer's PHONE NUMBER is their account (unique, validated as a 10-digit mobile). The name is only a label: returning customers can log in with just their number, or type a new name to change it, or edit it in Profile. New numbers must give a name. Run `npm run migrate` once to add the phone-format check.
-- Fixed: the shop password fields did not accept typing. Signup now has a confirm-password field and a Show password toggle.
-- Sign-in lasts a year after your LAST visit, for customers and shops (it renews itself while you keep using it).
-- Shops can add one customer, or import a CSV/Excel list (columns: Name, Phone, optional Stamps). Cards are created automatically. Imported stamps are a starting balance and do not trigger rewards.
-- Excel files are read in the shop owner's browser using the SheetJS library from cdnjs (loaded only when needed); CSV works offline.
-
-## What's new in v2
-- Customers stay signed in for a year. Scanning a shop link again goes straight to Home.
-- One customer, many shops. Add a shop by scanning its QR with the in-app camera (Chrome/Android) or typing its 6-letter shop code. Each card has a **Request stamp** button.
-- Tap any reward for details and its 4-digit redeem code; the shop sees the code under **Winners**.
-- Shop alerts on every tab: floating bar with Approve/Decline, red count on the Approvals tab, tab-title count, beep, optional desktop notifications. Updates are pushed live (no waiting for polling).
-- Customers tab: search, filters, date range, sort, CSV export, expandable details, remove customer, **WhatsApp click-to-chat** (opens your own WhatsApp with the message ready).
-- Overview: stats, weekly stamps chart, customer growth chart. Rewards can be edited.
-- Shop address, hours and phone are shown to customers (with Call and Directions buttons).
-- Swiss grid + editorial serif design.
-
-## Why tabs are now fast
-- The dashboard loads everything in ONE request (queries run in parallel) and renders tabs from memory instantly, refreshing quietly in the background.
-- Sessions are cached in memory, and a ping every 4 minutes keeps Neon from sleeping.
-- **Put your server in the same region as your Neon database** (for India, pick a Singapore/Mumbai-nearby region for both). Distance to the database is the biggest remaining factor.
-
-## Deploy to loyalty.bunkwise.in
-Neon is only the database. Run this Node app on a host (Render, Railway, Fly, or a VPS) in the same region as Neon. Set `DATABASE_URL`, `BASE_URL=https://loyalty.bunkwise.in`, `NODE_ENV=production`, then add a CNAME record for `loyalty` pointing to the host. Live updates need a host that allows long-lived connections (all of these do).
-
-## Ready for OTP and more
-- `verifyPhone()` in `server.js` is the single OTP hook; `customers.phone_verified` already exists.
-- `shops.plan` is ready for paid tiers.
+## Staff accounts (structure only)
+`shop_staff` (approve-only role) and `stamp_requests.decided_by` exist; no screens yet.
 
 ## Known limits
 - Without OTP, anyone who knows a phone number can open that customer's card.
-- Rate limiting and live-update connections are in memory, so run a single server instance for now.
-- Camera QR scanning needs a browser with BarcodeDetector (Chrome on Android). Other browsers use the shop code or the phone's camera app.
-
-## Design update (round 7)
-- New look: flat surfaces, fog-grey page, navy, bottle green and stamp-ink blue. No gradients, no emojis, no logo mark.
-- Icons are bundled SVGs (public/icons.js): Tabler Icons for the interface and Phosphor Icons for stamp marks, both MIT (see public/icons/LICENSES.txt). To add or swap an icon, edit the maps in icons.js.
-- The card view shows a paper-style card with numbered printed circles; each approved stamp is a rubber-stamp impression (ring + shop glyph, slight random rotation, ink texture through the `#ink` SVG filter in common.js).
-- Shops choose their stamp design in Settings (12 glyphs). Run `npm run migrate` once to add the `stamp_icon` column.
-- Inner screens have a labelled Back button in the top bar, outside the card.
-- To use your own stamp artwork later: replace the markup in `stampImg()` in common.js with an `<img>` of your PNG/SVG.
+- Session revocation (log out all, suspend, block) takes up to an hour; admin changes to admin users are immediate.
+- In-memory rate limits are per serverless instance; login/signup/reset limits are shared through the database.
+- Renaming: `public/brand.js`, the `<title>` tags, `package.json`.
