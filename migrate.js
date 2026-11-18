@@ -4,7 +4,7 @@ const {Client}=require('pg'),fs=require('fs'),path=require('path');
 // Never edit a file that has already run anywhere: add a new numbered file instead.
 // (CREATE INDEX CONCURRENTLY cannot run in a transaction: put it in its own file and run it by hand on big tables.)
 (async()=>{
-  const c=new Client({connectionString:process.env.DATABASE_URL});await c.connect();
+  const c=new Client({connectionString:process.env.DATABASE_URL_UNPOOLED||process.env.DATABASE_URL});await c.connect();
   try{
     await c.query('select pg_advisory_lock(727001)'); // two deploys migrating at once wait for each other
     await c.query('create table if not exists schema_migrations(name text primary key, applied_at timestamptz not null default now())');
